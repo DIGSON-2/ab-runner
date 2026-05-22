@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>AB Runner</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <span>📁 AB Runner</span>
+                <div style="display:flex; gap:4px;">
+                    <button id="newFolderBtn" style="padding:4px 8px; font-size:14px;" title="Новая папка">📁</button>
+                    <button id="newCollectionBtn" style="padding:4px 8px; font-size:14px;"
+                        title="Новая коллекция">+</button>
+                </div>
+            </div>
+            <div class="sidebar-search">
+                <input type="text" id="searchInput" placeholder="Поиск коллекций...">
+            </div>
+            <div class="tree-container" id="treeContainer"></div>
+            <div class="sidebar-footer">
+                <div class="theme-toggle">
+                    <span>Тема: <span id="themeName">Тёмная</span></span>
+                    <button id="themeToggleBtn">🔄 Сменить</button>
+                </div>
+                <small style="color: var(--text-secondary);">Выберите коллекцию для редактирования</small>
+                <button id="toggleSidebarBtn" style="width:100%; margin-top: 6px;">☰ Скрыть панель</button>
+            </div>
+        </div>
+        <div class="resizer" id="resizer"></div>
+        <div class="main" id="mainPanel">
+            <div id="emptyState" style="text-align:center; margin-top:100px; color: var(--text-secondary);">
+                <h2>👈 Выберите или создайте коллекцию</h2>
+                <p>Коллекции содержат шаги (запросы), выполняемые для каждого элемента данных.</p>
+            </div>
+            <div id="collectionEditor" style="display:none;">
+                <div class="collection-title-row">
+                    <input type="text" id="collectionNameInput" placeholder="Название коллекции">
+                    <button id="addStepBtn" class="secondary">+ Добавить шаг</button>
+                    <button id="jsonGeneratorBtn" class="secondary">📝 Создать JSON данных</button>
+                    <button id="importCurlBtn" class="secondary" title="Импортировать шаг из cURL">📋 Из cURL</button>
+                    <button id="importPostmanBtn" class="secondary" title="Импортировать коллекцию Postman">📥 Импорт
+                        Postman</button>
+                </div>
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="runner">Раннер</button>
+                    <button class="tab-btn" data-tab="history">История</button>
+                </div>
+                <div id="runnerTab" class="tab-content">
+                    <div class="steps-container" id="stepsContainer"></div>
+                    <div class="run-bar">
+                        <div class="field" style="margin:0; flex:1;">
+                            <label>Файл данных (JSON)</label>
+                            <div class="file-input-wrapper">
+                                <label class="file-input-button" for="dataFileInput">📂 Выберите файл</label>
+                                <input type="file" id="dataFileInput" accept=".json">
+                                <span class="file-name" id="selectedFileName">Файл не выбран</span>
+                            </div>
+                        </div>
+                        <div class="field" style="margin:0; width:100px;">
+                            <label>Задержка (мс)</label>
+                            <input type="number" id="delayInput" value="0" min="0">
+                        </div>
+                        <button id="runCollectionBtn" style="height:fit-content; align-self:flex-end;">▶
+                            Запустить</button>
+                    </div>
+                    <div id="progress"></div>
+                    <table class="results-table" id="runnerResultsTable">
+                        <thead>
+                            <tr>
+                                <th>Элемент</th>
+                                <th>Шаг</th>
+                                <th>Статус</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="historyTab" class="tab-content" style="display:none;">
+                    <div class="history-actions">
+                        <select id="historyCollectionFilter">
+                            <option value="">Все коллекции</option>
+                        </select>
+                        <button id="refreshHistoryBtn" class="secondary">🔄 Обновить</button>
+                        <button id="clearHistoryBtn" class="danger">🗑 Очистить историю</button>
+                    </div>
+                    <table class="results-table" id="historyTable">
+                        <thead>
+                            <tr>
+                                <th>Время</th>
+                                <th>Коллекция</th>
+                                <th>Тип</th>
+                                <th>Элемент</th>
+                                <th>Шаг</th>
+                                <th>URL</th>
+                                <th>Статус</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальные окна -->
+    <div class="modal" id="jsonModal">
+        <div class="modal-content">
+            <div class="modal-header">Генератор JSON-данных</div>
+            <p style="margin-bottom:12px; color:var(--text-secondary);">Добавьте поля (ключи) и списки значений через
+                запятую. Длины всех списков должны совпадать.</p>
+            <div id="fieldsContainer"></div>
+            <button id="addFieldBtn" class="secondary" style="margin-bottom:12px;">+ Добавить поле</button>
+            <button id="generateJsonBtn">Сгенерировать</button>
+            <div class="generated-json" id="jsonPreview" style="display:none;"></div>
+            <div class="modal-actions">
+                <button id="saveJsonBtn" style="display:none;">💾 Сохранить как...</button>
+                <button id="closeModalBtn" class="secondary">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="sendRequestModal">
+        <div class="modal-content">
+            <div class="modal-header">Отправить запрос</div>
+            <label>Тестовые данные (JSON, для замены плейсхолдеров)</label>
+            <textarea id="testDataInput" rows="4" placeholder='{"id": 1, "name": "test"}'></textarea>
+            <button id="sendSingleBtn" style="margin-top: 8px;">▶ Отправить</button>
+            <div id="singleResponseArea" style="margin-top: 12px;"></div>
+            <div class="modal-actions">
+                <button id="closeSendModalBtn" class="secondary">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="detailModal">
+        <div class="detail-modal-content">
+            <div class="detail-header">
+                <h2 id="detailModalTitle">Детали запроса</h2>
+                <button id="closeDetailModalBtn" class="detail-close-btn">✕ Закрыть</button>
+            </div>
+            <div id="detailContent"></div>
+        </div>
+    </div>
+
+    <div class="modal" id="inputModal">
+        <div class="modal-content" style="width:400px;">
+            <div class="modal-header" id="inputModalTitle">Введите значение</div>
+            <input type="text" id="inputModalField" style="width:100%; margin-bottom:16px;" placeholder="">
+            <div class="modal-actions">
+                <button id="inputModalCancelBtn" class="secondary">Отмена</button>
+                <button id="inputModalOkBtn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="curlModal">
+        <div class="modal-content" style="width:600px;">
+            <div class="modal-header">Импорт из cURL</div>
+            <textarea id="curlInput" rows="8"
+                placeholder="curl -X POST 'https://api.example.com' -H 'Authorization: Bearer token' -d '{\"
+                key\":\"value\"}'"></textarea>
+            <div class="modal-actions">
+                <button id="parseCurlBtn">Создать шаг</button>
+                <button id="closeCurlModalBtn" class="secondary">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="sidebarToggleBtn" class="sidebar-toggle-btn">☰</button>
+    <input type="file" id="postmanFileInput" accept=".json,.postman_collection" style="display:none;">
+
+    <script src="renderer.js"></script>
+</body>
+
+</html>
