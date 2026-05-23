@@ -1,6 +1,7 @@
 {
   "name": "final",
   "version": "1.0.0",
+  "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
   "scripts": {
@@ -10,6 +11,10 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "release": "electron-builder --publish always"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DIGSON-2/ab-runner.git"
   },
   "build": {
     "appId": "com.abrunner.app",
@@ -29,7 +34,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "build/icon.ico"
+      "signAndEditExecutable": false
     },
     "mac": {
       "target": [
