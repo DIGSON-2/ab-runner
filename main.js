@@ -1,17 +1,16 @@
-// main.js
+// main.js – исправленная версия
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const { autoUpdater } = require('electron-updater');
+
 let mainWindow;
 
-// Файлы данных
 const dataPath = path.join(app.getPath('userData'), 'ab-runner-data.json');
 const historyPath = path.join(app.getPath('userData'), 'ab-runner-history.json');
 const oldCollectionsPath = path.join(app.getPath('userData'), 'ab-runner-collections.json');
 
-// Глобальная история (загружается из файла)
 let history = [];
 
 function createWindow() {
@@ -27,201 +26,159 @@ function createWindow() {
     mainWindow.loadFile('renderer.html');
 }
 
+// ------------------- Автообновление -------------------
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on('checking-for-update', () => console.log('Проверка обновлений...'));
+autoUpdater.on('update-available', (info) => console.log('Доступно обновление:', info.version));
+autoUpdater.on('update-not-available', () => console.log('Обновлений нет'));
+autoUpdater.on('error', (err) => console.error('Ошибка автообновления:', err));
+autoUpdater.on('download-progress', (p) => console.log(`Загрузка: ${p.percent}%`));
+autoUpdater.on('update-downloaded', () => console.log('Обновление загружено'));
+ipcMain.handle('check-for-updates', async () => await autoUpdater.checkForUpdatesAndNotify());
+ipcMain.handle('quit-and-install', () => autoUpdater.quitAndInstall());
+
 app.whenReady().then(() => {
     loadHistory();
     createWindow();
-});
-
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
-});
-
-
-// ------------------- Автообновление -------------------
-autoUpdater.autoDownload = true;       // скачивать обновление автоматически
-autoUpdater.autoInstallOnAppQuit = true; // устанавливать при выходе
-
-// Проверять обновления раз в 24 часа
-autoUpdater.checkForUpdatesAndNotify();
-
-// Можно также проверять при запуске
-app.whenReady().then(() => {
-    createWindow();
     autoUpdater.checkForUpdatesAndNotify();
 });
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-// Обработчики событий (опционально, для логов)
-autoUpdater.on('checking-for-update', () => {
-    console.log('Проверка обновлений...');
-});
-
-autoUpdater.on('update-available', (info) => {
-    console.log('Доступно обновление:', info.version);
-});
-
-autoUpdater.on('update-not-available', (info) => {
-    console.log('Обновлений нет');
-});
-
-autoUpdater.on('error', (err) => {
-    console.error('Ошибка автообновления:', err);
-});
-
-autoUpdater.on('download-progress', (progressObj) => {
-    let logMessage = `Скорость загрузки: ${progressObj.bytesPerSecond}`;
-    logMessage = `${logMessage} - Загружено ${progressObj.percent}%`;
-    logMessage = `${logMessage} (${progressObj.transferred}/${progressObj.total})`;
-    console.log(logMessage);
-});
-
-autoUpdater.on('update-downloaded', (info) => {
-    console.log('Обновление загружено, будет установлено при выходе');
-});
-
-ipcMain.handle('check-for-updates', async () => {
-    await autoUpdater.checkForUpdatesAndNotify();
-});
-
-ipcMain.handle('quit-and-install', () => {
-    autoUpdater.quitAndInstall();
-});
+// ------------------- Очистка строки -------------------
+function cleanString(str) {
+    if (typeof str !== 'string') return str;
+    return str.replace(/^\uFEFF/, '').replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
+}
 
 // ------------------- Замена плейсхолдеров -------------------
-function replacePlaceholders(template, item) {
+// options.toJson = true -> объекты/массивы сериализуются в JSON (для тела запроса)
+// options.toJson = false (по умолчанию) -> объекты оставляют плейсхолдер (для URL)
+function replacePlaceholders(template, item, options = {}) {
+    if (!template) return template;
+    const cleaned = cleanString(template);
+    const { toJson = false } = options;
+
+    // Если item — примитив, заменяем только {id}
     if (item === null || typeof item !== 'object') {
-        return template.replace(/\{id\}/g, String(item));
+        return cleaned.replace(/\{id\}/g, String(item ?? ''));
     }
-    return template.replace(/\{([^}]+)\}/g, (match, path) => {
-        const keys = path.split('.');
+
+    // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: [^{}]+ вместо [^}]+
+    // Это не позволяет регулярке захватить JSON-структуру,
+    // так как внутри плейсхолдера не может быть { или }
+    return cleaned.replace(/\{([^{}]+)\}/g, (match, pathStr) => {
+        const keys = pathStr.split('.');
         let value = item;
+
+        // Идём по пути a.b.c
         for (const key of keys) {
-            if (value && typeof value === 'object' && key in value) {
+            if (value === null || value === undefined) {
+                return match; // путь через null -> оставляем плейсхолдер
+            }
+            if (typeof value === 'object' && key in value) {
                 value = value[key];
             } else {
-                return match;
+                return match; // ключ не найден -> оставляем плейсхолдер
             }
         }
+
+        // Обработка специальных значений
+        if (value === null || value === undefined) {
+            return '';
+        }
+
+        // Для объектов/массивов
+        if (typeof value === 'object') {
+            return toJson ? JSON.stringify(value) : match;
+        }
+
         return String(value);
     });
 }
 
-// ------------------- Работа с историей -------------------
+// ------------------- История -------------------
 function loadHistory() {
-    try {
-        if (fs.existsSync(historyPath)) {
-            history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-        }
-    } catch (e) {
-        history = [];
-    }
+    try { if (fs.existsSync(historyPath)) history = JSON.parse(fs.readFileSync(historyPath, 'utf8')); } catch (e) { history = []; }
 }
+function saveHistory() { fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8'); }
+function addToHistory(entry) { history.unshift(entry); saveHistory(); }
 
-function saveHistory() {
-    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8');
-}
-
-function addToHistory(entry) {
-    history.unshift(entry);
-    saveHistory();
-}
-
-// ------------------- Работа с данными (папки + коллекции) -------------------
+// ------------------- Данные -------------------
 function migrateOldData() {
     if (fs.existsSync(dataPath)) return;
     const data = { folders: [], collections: [] };
     if (fs.existsSync(oldCollectionsPath)) {
         try {
-            const oldCollections = JSON.parse(fs.readFileSync(oldCollectionsPath, 'utf8'));
-            if (Array.isArray(oldCollections)) {
-                data.collections = oldCollections.map(col => ({
-                    ...col,
-                    folderId: null,
-                }));
-            }
+            const old = JSON.parse(fs.readFileSync(oldCollectionsPath, 'utf8'));
+            if (Array.isArray(old)) data.collections = old.map(c => ({ ...c, folderId: null }));
             fs.renameSync(oldCollectionsPath, oldCollectionsPath + '.backup');
-        } catch (e) {
-            console.error('Ошибка миграции старых коллекций:', e);
-        }
+        } catch (e) { }
     }
     writeData(data);
 }
-
 function readData() {
     migrateOldData();
-    try {
-        if (fs.existsSync(dataPath)) {
-            return JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-        }
-    } catch (e) { }
+    try { return JSON.parse(fs.readFileSync(dataPath, 'utf8')); } catch (e) { }
     return { folders: [], collections: [] };
 }
-
-function writeData(data) {
-    fs.writeFileSync(dataPath, JSON.stringify(data, null, 2), 'utf8');
-}
-
+function writeData(data) { fs.writeFileSync(dataPath, JSON.stringify(data, null, 2), 'utf8'); }
 ipcMain.handle('get-data', async () => readData());
-ipcMain.handle('save-data', async (event, newData) => {
-    writeData(newData);
-    return { success: true };
-});
+ipcMain.handle('save-data', async (event, d) => { writeData(d); return { success: true }; });
 
 // ------------------- Запуск коллекции -------------------
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName }) => {
     if (!Array.isArray(items)) return { success: false, error: 'Данные должны быть массивом' };
-    let globalCounter = 0;
-    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-        const item = items[itemIndex];
-        for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
-            const step = steps[stepIndex];
-            const stepName = step.name || `Шаг ${stepIndex + 1}`;
+    let counter = 0;
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        for (let j = 0; j < steps.length; j++) {
+            const step = steps[j];
+            const stepName = step.name || `Шаг ${j + 1}`;
             const currentUrl = replacePlaceholders(step.url, item);
+            let requestBody = null;
             try {
-                let data = undefined, requestBody = null;
+                let data = undefined;
                 if (step.body) {
-                    requestBody = replacePlaceholders(step.body, item);
+                    // toJson: true — объекты внутри плейсхолдеров сериализуются в JSON
+                    requestBody = replacePlaceholders(step.body, item, { toJson: true });
                     data = /json/.test(step.contentType) ? JSON.parse(requestBody) : requestBody;
                 }
                 const headers = { Authorization: step.auth, 'Content-Type': step.contentType, ...step.customHeaders };
                 const response = await axios({ method: step.method, url: currentUrl, headers, data });
-                globalCounter++;
+                counter++;
                 addToHistory({
-                    timestamp: new Date().toISOString(),
-                    collection: collectionName,
-                    type: 'collection',
-                    item: JSON.stringify(item),
-                    stepName, url: currentUrl, method: step.method,
+                    timestamp: new Date().toISOString(), collection: collectionName, type: 'collection',
+                    item: JSON.stringify(item), stepName, url: currentUrl, method: step.method,
                     status: response.status, success: true,
                     responseData: response.data, responseHeaders: response.headers,
                     requestBody, requestHeaders: headers,
                 });
                 mainWindow.webContents.send('progress', {
-                    itemIndex, stepIndex,
-                    item: JSON.stringify(item), stepName,
+                    itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName,
                     success: true, status: response.status,
+                    requestBody: requestBody,
                     response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl },
                 });
             } catch (e) {
                 const status = e.response ? e.response.status : e.message;
                 addToHistory({
-                    timestamp: new Date().toISOString(),
-                    collection: collectionName,
-                    type: 'collection',
+                    timestamp: new Date().toISOString(), collection: collectionName, type: 'collection',
                     item: JSON.stringify(item), stepName, url: currentUrl, method: step.method,
                     status, success: false, error: e.message,
                     responseData: e.response?.data, responseHeaders: e.response?.headers,
                 });
                 mainWindow.webContents.send('progress', {
-                    itemIndex, stepIndex,
-                    item: JSON.stringify(item), stepName,
+                    itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName,
                     success: false, status, error: e.message,
+                    requestBody: requestBody || null,
                     response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null,
                 });
             }
             if (delay > 0) await new Promise(r => setTimeout(r, delay));
         }
     }
-    return { success: true, totalExecuted: globalCounter };
+    return { success: true, totalExecuted: counter };
 });
 
 // ------------------- Одиночный запрос -------------------
@@ -230,18 +187,19 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
         const item = testData ? JSON.parse(testData) : {};
         const currentUrl = replacePlaceholders(step.url, item);
         let requestBody = null;
-        if (step.body) requestBody = replacePlaceholders(step.body, item);
+        if (step.body) {
+            requestBody = replacePlaceholders(step.body, item, { toJson: true });
+        }
         let data = undefined;
-        if (requestBody) data = /json/.test(step.contentType) ? JSON.parse(requestBody) : requestBody;
+        if (requestBody) {
+            data = /json/.test(step.contentType) ? JSON.parse(requestBody) : requestBody;
+        }
         const requestHeaders = { Authorization: step.auth, 'Content-Type': step.contentType, ...step.customHeaders };
         const response = await axios({ method: step.method, url: currentUrl, headers: requestHeaders, data });
         addToHistory({
-            timestamp: new Date().toISOString(),
-            collection: collectionName || '',
-            type: 'single',
+            timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single',
             item: testData || '{}', stepName: step.name || 'Одиночный запрос',
-            url: currentUrl, method: step.method,
-            status: response.status, success: true,
+            url: currentUrl, method: step.method, status: response.status, success: true,
             responseData: response.data, responseHeaders: response.headers,
             requestBody, requestHeaders,
         });
@@ -261,11 +219,9 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
             headers: {}, data: null, url: '', requestBody: null, requestHeaders: {},
         };
         addToHistory({
-            timestamp: new Date().toISOString(),
-            collection: collectionName || '', type: 'single',
+            timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single',
             item: testData || '{}', stepName: step.name || 'Одиночный запрос',
-            url: err.url, method: step.method,
-            status: err.status, success: false, error: e.message,
+            url: err.url, method: step.method, status: err.status, success: false, error: e.message,
             responseData: err.data, responseHeaders: err.headers,
         });
         return err;
@@ -274,22 +230,14 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
 // ------------------- История -------------------
 ipcMain.handle('get-history', async () => history);
-ipcMain.handle('clear-history', async () => {
-    history = [];
-    saveHistory();
-    return { success: true };
-});
+ipcMain.handle('clear-history', async () => { history = []; saveHistory(); return { success: true }; });
 
 // Сохранение файла
 ipcMain.handle('save-file-dialog', async (event, content, defaultName = 'data.json') => {
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
-        title: 'Сохранить JSON-файл',
-        defaultPath: defaultName,
+        title: 'Сохранить JSON-файл', defaultPath: defaultName,
         filters: [{ name: 'JSON Files', extensions: ['json'] }],
     });
-    if (filePath) {
-        fs.writeFileSync(filePath, content, 'utf8');
-        return { success: true, filePath };
-    }
+    if (filePath) { fs.writeFileSync(filePath, content, 'utf8'); return { success: true, filePath }; }
     return { success: false };
 });
