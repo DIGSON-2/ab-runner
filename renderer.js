@@ -605,44 +605,86 @@ saveJsonBtn.addEventListener('click', async () => {
 });
 
 // ================== Импорт cURL (переработанная версия) ==================
-function parseCurl(curlString) {
-    // Удаляем обратные слеши с переносами, сжимаем пробелы
-    let cmd = curlString.replace(/\\\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!cmd.startsWith('curl ')) return null;
+function parseCurl(cmd) {
+    // Убираем line continuation (обратный слеш + перевод строки)
+    let c = cmd.replace(/\\\r?\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!c.startsWith('curl ')) return null;
 
-    // Токенизируем: разделяем по пробелам, но сохраняем кавычки
+    // Убираем начальное "curl "
+    c = c.substring(5);
+
     const tokens = [];
+    let current = '';
     let i = 0;
-    while (i < cmd.length) {
-        if (cmd[i] === ' ') { i++; continue; }
-        if (cmd[i] === "'" || cmd[i] === '"') {
-            const quote = cmd[i];
-            const end = cmd.indexOf(quote, i + 1);
-            if (end === -1) {
-                tokens.push(cmd.substring(i));
-                break;
+    const STATE = { NORMAL: 0, SQ: 1, DQ: 2 };
+    let state = STATE.NORMAL;
+
+    while (i < c.length) {
+        const ch = c[i];
+        if (state === STATE.NORMAL) {
+            if (ch === ' ') {
+                if (current !== '') {
+                    tokens.push(current);
+                    current = '';
+                }
+            } else if (ch === "'") {
+                state = STATE.SQ;
+            } else if (ch === '"') {
+                state = STATE.DQ;
+            } else if (ch === '\\') {
+                // обратный слеш экранирует следующий символ (даже пробел)
+                if (i + 1 < c.length) {
+                    current += c[i + 1];
+                    i++;
+                } else {
+                    current += '\\';
+                }
+            } else {
+                current += ch;
             }
-            tokens.push(cmd.substring(i + 1, end));
-            i = end + 1;
-        } else {
-            const nextSpace = cmd.indexOf(' ', i);
-            if (nextSpace === -1) {
-                tokens.push(cmd.substring(i));
-                break;
+        } else if (state === STATE.SQ) {
+            if (ch === "'") {
+                if (i + 1 < c.length && c[i + 1] === "'") {
+                    // '\'' — экранированный апостроф внутри одинарных кавычек
+                    current += "'";
+                    i++;
+                } else {
+                    // закрывающая кавычка
+                    state = STATE.NORMAL;
+                }
+            } else {
+                current += ch;
             }
-            tokens.push(cmd.substring(i, nextSpace));
-            i = nextSpace + 1;
+        } else if (state === STATE.DQ) {
+            if (ch === '\\' && i + 1 < c.length) {
+                // в двойных кавычках \ экранирует следующий символ (обычно " \ $ ` и т.д.)
+                current += c[i + 1];
+                i++;
+            } else if (ch === '"') {
+                state = STATE.NORMAL;
+            } else {
+                current += ch;
+            }
         }
+        i++;
+    }
+    if (current !== '') {
+        tokens.push(current);
     }
 
+    // Теперь интерпретируем токены
     const result = { method: 'GET', url: '', headers: {}, body: null };
-    let iTok = 1; // первый токен 'curl', пропускаем
+    let iTok = 0;
     while (iTok < tokens.length) {
         const token = tokens[iTok];
-        if (token === '--location' || token === '--compressed' || token === '--silent') {
+
+        // Пропускаем флаги без значений
+        if (['--location', '--compressed', '--silent', '--insecure'].includes(token)) {
             iTok++;
             continue;
         }
+
+        // Метод
         if (token === '-X' || token === '--request') {
             if (iTok + 1 < tokens.length) {
                 result.method = tokens[iTok + 1].toUpperCase();
@@ -650,30 +692,44 @@ function parseCurl(curlString) {
             } else iTok++;
             continue;
         }
+
+        // Заголовок
         if (token === '-H' || token === '--header') {
             if (iTok + 1 < tokens.length) {
                 const headerStr = tokens[iTok + 1];
-                const [key, ...rest] = headerStr.split(':');
-                if (key && rest.length) result.headers[key.trim()] = rest.join(':').trim();
+                const colonIndex = headerStr.indexOf(':');
+                if (colonIndex > 0) {
+                    const key = headerStr.substring(0, colonIndex).trim();
+                    const value = headerStr.substring(colonIndex + 1).trim();
+                    if (key) result.headers[key] = value;
+                }
                 iTok += 2;
             } else iTok++;
             continue;
         }
-        if (token === '--data' || token === '--data-raw' || token === '-d') {
+
+        // Тело запроса
+        if (['--data', '--data-raw', '-d', '--data-binary'].includes(token)) {
             if (iTok + 1 < tokens.length) {
                 result.body = tokens[iTok + 1];
                 iTok += 2;
             } else iTok++;
             continue;
         }
-        // Если не опция, считаем URL
+
+        // Если токен не начинается с '-', считаем его URL (последний такой перезапишет)
         if (!token.startsWith('-')) {
             result.url = token;
             iTok++;
             continue;
         }
-        // Неизвестный флаг, пропускаем
-        iTok++;
+
+        // Неизвестный флаг — если за ним следует не флаг, пропускаем оба
+        if (iTok + 1 < tokens.length && !tokens[iTok + 1].startsWith('-')) {
+            iTok += 2;
+        } else {
+            iTok++;
+        }
     }
 
     return result;
@@ -920,7 +976,38 @@ postmanFileInput.addEventListener('change', async (e) => {
     }
     postmanFileInput.value = '';
 });
-
+// Горячие клавиши
+document.addEventListener('keydown', (e) => {
+    // Ctrl+Enter — запуск раннера
+    if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('runCollectionBtn').click();
+    }
+    // Ctrl+B — скрыть/показать боковую панель
+    if (e.ctrlKey && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebarBtn.click();
+    }
+    // Ctrl+N — новая коллекция
+    if (e.ctrlKey && e.key === 'n' && !e.shiftKey) {
+        e.preventDefault();
+        newCollectionBtn.click();
+    }
+    // Ctrl+Shift+N — новая папка
+    if (e.ctrlKey && e.shiftKey && e.key === 'N') {
+        e.preventDefault();
+        newFolderBtn.click();
+    }
+    // Escape — закрыть все модальные окна
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
+        // Если окно Send было открыто, сбросить текущий шаг
+        if (sendRequestModal.classList.contains('active')) {
+            sendRequestModal.classList.remove('active');
+            currentStepForSend = null;
+        }
+    }
+});
 // Старт
 loadData();
 showEmptyState();

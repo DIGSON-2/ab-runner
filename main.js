@@ -3,7 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-
+const { autoUpdater } = require('electron-updater');
 let mainWindow;
 
 // Файлы данных
@@ -34,6 +34,56 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+});
+
+
+// ------------------- Автообновление -------------------
+autoUpdater.autoDownload = true;       // скачивать обновление автоматически
+autoUpdater.autoInstallOnAppQuit = true; // устанавливать при выходе
+
+// Проверять обновления раз в 24 часа
+autoUpdater.checkForUpdatesAndNotify();
+
+// Можно также проверять при запуске
+app.whenReady().then(() => {
+    createWindow();
+    autoUpdater.checkForUpdatesAndNotify();
+});
+
+// Обработчики событий (опционально, для логов)
+autoUpdater.on('checking-for-update', () => {
+    console.log('Проверка обновлений...');
+});
+
+autoUpdater.on('update-available', (info) => {
+    console.log('Доступно обновление:', info.version);
+});
+
+autoUpdater.on('update-not-available', (info) => {
+    console.log('Обновлений нет');
+});
+
+autoUpdater.on('error', (err) => {
+    console.error('Ошибка автообновления:', err);
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+    let logMessage = `Скорость загрузки: ${progressObj.bytesPerSecond}`;
+    logMessage = `${logMessage} - Загружено ${progressObj.percent}%`;
+    logMessage = `${logMessage} (${progressObj.transferred}/${progressObj.total})`;
+    console.log(logMessage);
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+    console.log('Обновление загружено, будет установлено при выходе');
+});
+
+ipcMain.handle('check-for-updates', async () => {
+    await autoUpdater.checkForUpdatesAndNotify();
+});
+
+ipcMain.handle('quit-and-install', () => {
+    autoUpdater.quitAndInstall();
 });
 
 // ------------------- Замена плейсхолдеров -------------------
@@ -232,14 +282,14 @@ ipcMain.handle('clear-history', async () => {
 
 // Сохранение файла
 ipcMain.handle('save-file-dialog', async (event, content, defaultName = 'data.json') => {
-  const { filePath } = await dialog.showSaveDialog(mainWindow, {
-    title: 'Сохранить JSON-файл',
-    defaultPath: defaultName,
-    filters: [{ name: 'JSON Files', extensions: ['json'] }],
-  });
-  if (filePath) {
-    fs.writeFileSync(filePath, content, 'utf8');
-    return { success: true, filePath };
-  }
-  return { success: false };
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: 'Сохранить JSON-файл',
+        defaultPath: defaultName,
+        filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    });
+    if (filePath) {
+        fs.writeFileSync(filePath, content, 'utf8');
+        return { success: true, filePath };
+    }
+    return { success: false };
 });
