@@ -1,11 +1,9 @@
-// renderer.js – исправлены размеры панели и cURL-парсер
+// renderer.js – полная версия с исправлениями
 let data = { folders: [], collections: [] };
 let activeCollectionId = null;
 let activeCollection = null;
 let searchQuery = '';
 
-const importPostmanBtn = document.getElementById('importPostmanBtn');
-const postmanFileInput = document.getElementById('postmanFileInput');
 const treeContainer = document.getElementById('treeContainer');
 const searchInput = document.getElementById('searchInput');
 const emptyStateEl = document.getElementById('emptyState');
@@ -33,7 +31,7 @@ const testDataInput = document.getElementById('testDataInput');
 const sendSingleBtn = document.getElementById('sendSingleBtn');
 const closeSendModalBtn = document.getElementById('closeSendModalBtn');
 const newFolderBtn = document.getElementById('newFolderBtn');
-const newCollectionBtn = document.getElementById('newCollectionBtn');
+const newRootCollectionBtn = document.getElementById('newRootCollectionBtn');
 const addStepBtn = document.getElementById('addStepBtn');
 const runCollectionBtn = document.getElementById('runCollectionBtn');
 const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
@@ -54,53 +52,111 @@ const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
 
 let currentStepForSend = null;
 let fullHistory = [];
-let sidebarWidth = 260; // начальная ширина
+let sidebarWidth = 260;
 
-// ================== Sidebar resize & toggle ==================
-function updateMaxWidth() {
-    const maxWidth = Math.floor(window.innerWidth * 0.4); // 40% от ширины окна
-    sidebar.style.maxWidth = maxWidth + 'px';
-    if (sidebarWidth > maxWidth) {
-        sidebar.style.width = maxWidth + 'px';
-        sidebarWidth = maxWidth;
-    }
+// ================== УТИЛИТЫ ==================
+
+// Безопасное экранирование HTML
+function escapeHtml(t) {
+    if (typeof t !== 'string') return t == null ? '' : String(t);
+    return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
-window.addEventListener('resize', () => {
-    updateMaxWidth();
-});
-importPostmanBtn.addEventListener('click', () => {
-    postmanFileInput.click();
-});
+// Создание текстового элемента (безопаснее innerHTML)
+function txt(tag, text, className) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = text;
+    return el;
+}
 
+// Debounce для автосохранения
+function debounce(fn, delay) {
+    let timer;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+    };
+}
 
+// Toast-уведомления
+function toast(message, type = 'info', duration = 3000) {
+    let container = document.querySelector('.toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = message;
+    container.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+        el.classList.remove('show');
+        setTimeout(() => el.remove(), 300);
+    }, duration);
+}
+
+// Кастомный confirm вместо browser confirm
+function confirmDialog(title, message) {
+    return new Promise(resolve => {
+        const dialog = document.createElement('div');
+        dialog.className = 'confirm-dialog';
+        dialog.innerHTML = `
+            <div class="confirm-dialog-content">
+                <h3></h3>
+                <p></p>
+                <div class="confirm-dialog-actions">
+                    <button class="secondary cancel-btn">Отмена</button>
+                    <button class="danger ok-btn">OK</button>
+                </div>
+            </div>
+        `;
+        dialog.querySelector('h3').textContent = title;
+        dialog.querySelector('p').textContent = message;
+        document.body.appendChild(dialog);
+
+        const cleanup = (result) => {
+            dialog.classList.remove('show');
+            setTimeout(() => dialog.remove(), 200);
+            resolve(result);
+        };
+
+        dialog.querySelector('.ok-btn').onclick = () => cleanup(true);
+        dialog.querySelector('.cancel-btn').onclick = () => cleanup(false);
+        dialog.onclick = (e) => { if (e.target === dialog) cleanup(false); };
+
+        requestAnimationFrame(() => dialog.classList.add('show'));
+    });
+}
+
+// Debounced save
+const debouncedSave = debounce(async () => {
+    try {
+        await saveData();
+    } catch (e) {
+        toast('Ошибка сохранения: ' + e.message, 'error');
+    }
+}, 500);
+
+// ================== Sidebar resize & toggle ==================
 let isResizing = false, startX, startWidth;
 resizer.addEventListener('mousedown', e => {
     if (sidebar.style.display === 'none') return;
-    isResizing = true;
-    startX = e.clientX;
-    startWidth = sidebar.offsetWidth;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+    isResizing = true; startX = e.clientX; startWidth = sidebar.offsetWidth;
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
 });
-
 document.addEventListener('mousemove', e => {
     if (!isResizing) return;
-    const minWidth = 300; // минимальная ширина, чтобы текст не ломался
-    const maxWidth = Math.floor(window.innerWidth * 0.4);
-    const newWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + (e.clientX - startX)));
+    const newWidth = Math.max(200, Math.min(Math.floor(window.innerWidth * 0.4), startWidth + (e.clientX - startX)));
     sidebar.style.width = newWidth + 'px';
     sidebarWidth = newWidth;
 });
-
 document.addEventListener('mouseup', () => {
-    if (isResizing) {
-        isResizing = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-    }
+    if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }
 });
-
 toggleSidebarBtn.addEventListener('click', () => {
     if (sidebar.style.display === 'none') {
         sidebar.style.display = '';
@@ -115,7 +171,6 @@ toggleSidebarBtn.addEventListener('click', () => {
         toggleSidebarBtn.textContent = '☰ Показать панель';
     }
 });
-
 sidebarToggleBtn.addEventListener('click', () => {
     sidebar.style.display = '';
     resizer.classList.remove('hidden');
@@ -123,7 +178,8 @@ sidebarToggleBtn.addEventListener('click', () => {
     sidebarToggleBtn.style.display = 'none';
     toggleSidebarBtn.textContent = '☰ Скрыть панель';
 });
-// ================== Модальные окна ==================
+
+// ================== Закрытие модальных окон ==================
 function setupModalOverlayClose() {
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', function (e) {
@@ -250,110 +306,344 @@ async function loadData() {
     data = await window.api.getData();
     if (!data.folders) data.folders = [];
     if (!data.collections) data.collections = [];
+    data.folders.forEach(f => {
+        if (f.parentId === undefined) f.parentId = null;
+        if (f.collapsed === undefined) f.collapsed = false;
+    });
+    data.collections.forEach(c => {
+        if (c.folderId === undefined) c.folderId = null;
+    });
     renderTree();
     updateHistoryFilter();
 }
 async function saveData() { await window.api.saveData(data); }
 
+// ================== Иконка коллекции ==================
+function getCollectionIcon(col) {
+    if (!col.steps || col.steps.length === 0) return '📄';
+    const methods = [...new Set(col.steps.map(s => s.method).filter(Boolean))];
+    if (methods.length === 0) return '📄';
+    if (methods.length === 1) {
+        switch (methods[0]) {
+            case 'GET': return '📥';
+            case 'POST': return '📤';
+            case 'PUT': return '📝';
+            case 'PATCH': return '🔧';
+            case 'DELETE': return '🗑️';
+            default: return '📄';
+        }
+    }
+    return '📂';
+}
+
+// ================== Генерация уникальных ID ==================
+function generateUniqueId() {
+    let id = Date.now().toString();
+    while (data.collections.some(c => c.id === id) || data.folders.some(f => f.id === id)) {
+        id = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 7);
+    }
+    return id;
+}
+
 // ================== Рендер дерева ==================
-function renderTree() {
-    treeContainer.innerHTML = '';
+function renderFolderChildren(folderId, container, level) {
     const folders = data.folders || [];
     const collections = data.collections || [];
-    folders.forEach(folder => {
-        const fCols = collections.filter(c => c.folderId === folder.id && matchesCollection(c));
-        if (searchQuery && fCols.length === 0) return;
+    const childFolders = folders.filter(f => f.parentId === folderId);
+
+    childFolders.forEach(folder => {
         const folderDiv = document.createElement('div');
-        folderDiv.className = 'folder-item';
+        folderDiv.className = 'folder-item' + (folder.collapsed ? ' collapsed' : '');
         folderDiv.dataset.folderId = folder.id;
-        folderDiv.innerHTML = `<span class="folder-name">📁 ${folder.name || 'Без названия'}</span><button class="delete-folder-btn">✕</button>`;
+        folderDiv.draggable = true;
+        folderDiv.style.paddingLeft = (level * 16) + 'px';
+
+        const nameSpan = txt('span', '📁 ' + (folder.name || 'Без названия'), 'folder-name');
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'folder-actions';
+        const addColBtn = document.createElement('button');
+        addColBtn.className = 'folder-add-collection-btn';
+        addColBtn.title = 'Создать коллекцию в этой папке';
+        addColBtn.textContent = '+';
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete-folder-btn';
+        delBtn.textContent = '✕';
+        actionsDiv.appendChild(addColBtn);
+        actionsDiv.appendChild(delBtn);
+
+        folderDiv.appendChild(nameSpan);
+        folderDiv.appendChild(actionsDiv);
+
+        const childContainer = document.createElement('div');
+        childContainer.className = 'folder-children' + (folder.collapsed ? ' collapsed' : '');
+        childContainer.dataset.folderId = folder.id;
+
+        container.appendChild(folderDiv);
+        container.appendChild(childContainer);
+        renderFolderContents(folder.id, childContainer, level + 1);
+
+        // Клик по папке — сворачивание/разворачивание
         folderDiv.addEventListener('click', e => {
-            if (e.target.classList.contains('delete-folder-btn')) return;
-            const child = folderDiv.nextElementSibling;
-            if (child && child.classList.contains('folder-children')) {
-                child.classList.toggle('collapsed');
-                folderDiv.classList.toggle('collapsed');
+            if (e.target.classList.contains('delete-folder-btn') || e.target.classList.contains('folder-add-collection-btn')) return;
+            folder.collapsed = !folder.collapsed;
+            saveData().then(() => renderTree());
+        });
+
+        // Drag-start папки
+        folderDiv.addEventListener('dragstart', e => {
+            e.dataTransfer.setData('text/plain', 'folder:' + folder.id);
+            e.dataTransfer.effectAllowed = 'move';
+            folderDiv.classList.add('dragging');
+        });
+        folderDiv.addEventListener('dragend', e => folderDiv.classList.remove('dragging'));
+
+        // ===== DROP-зона: заголовок папки =====
+        folderDiv.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const transferData = e.dataTransfer.getData('text/plain');
+            if (!transferData) return;
+            if (transferData === 'folder:' + folder.id) return;
+            folderDiv.classList.add('drag-over');
+            e.dataTransfer.dropEffect = 'move';
+        });
+        folderDiv.addEventListener('dragleave', e => {
+            if (!folderDiv.contains(e.relatedTarget)) {
+                folderDiv.classList.remove('drag-over');
             }
         });
-        folderDiv.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); folderDiv.classList.add('drag-over'); });
-        folderDiv.addEventListener('dragleave', e => folderDiv.classList.remove('drag-over'));
         folderDiv.addEventListener('drop', e => {
-            e.preventDefault(); e.stopPropagation(); folderDiv.classList.remove('drag-over');
-            const cid = e.dataTransfer.getData('text/plain');
-            if (cid) moveCollectionToFolder(cid, folder.id);
-        });
-        folderDiv.querySelector('.delete-folder-btn').addEventListener('click', e => {
+            e.preventDefault();
             e.stopPropagation();
-            if (collections.some(c => c.folderId === folder.id)) { alert('Сначала удалите или переместите все коллекции из папки.'); return; }
-            if (confirm(`Удалить папку "${folder.name}"?`)) { data.folders = data.folders.filter(f => f.id !== folder.id); saveData(); renderTree(); }
+            folderDiv.classList.remove('drag-over');
+            handleDropOnFolder(e.dataTransfer.getData('text/plain'), folder.id);
         });
-        treeContainer.appendChild(folderDiv);
-        const childCont = document.createElement('div');
-        childCont.className = 'folder-children';
-        fCols.forEach(c => renderCollectionItem(c, childCont));
-        treeContainer.appendChild(childCont);
+
+        // ===== DROP-зона: содержимое папки =====
+        childContainer.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const transferData = e.dataTransfer.getData('text/plain');
+            if (!transferData) return;
+            if (transferData === 'folder:' + folder.id) return;
+            childContainer.classList.add('drag-over');
+            folderDiv.classList.add('drag-over');
+            e.dataTransfer.dropEffect = 'move';
+        });
+        childContainer.addEventListener('dragleave', e => {
+            if (!childContainer.contains(e.relatedTarget)) {
+                childContainer.classList.remove('drag-over');
+                folderDiv.classList.remove('drag-over');
+            }
+        });
+        childContainer.addEventListener('drop', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            childContainer.classList.remove('drag-over');
+            folderDiv.classList.remove('drag-over');
+            handleDropOnFolder(e.dataTransfer.getData('text/plain'), folder.id);
+        });
+
+        // Удаление папки
+        delBtn.addEventListener('click', async e => {
+            e.stopPropagation();
+            const hasChildren = collections.some(c => c.folderId === folder.id) || folders.some(f => f.parentId === folder.id);
+            if (hasChildren) { toast('Сначала удалите или переместите все элементы из папки.', 'warning'); return; }
+            if (await confirmDialog('Удалить папку', `Удалить папку "${folder.name}"?`)) {
+                data.folders = data.folders.filter(f => f.id !== folder.id);
+                saveData(); renderTree();
+                toast('Папка удалена', 'success');
+            }
+        });
+
+        // Создание коллекции в папке
+        addColBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const newCol = {
+                id: generateUniqueId(),
+                name: 'Новая коллекция',
+                steps: [],
+                folderId: folder.id,
+            };
+            data.collections.push(newCol);
+            await saveData();
+            selectCollection(newCol.id);
+            renderTree();
+        });
     });
-    const rootCols = collections.filter(c => (!c.folderId || !folders.find(f => f.id === c.folderId)) && matchesCollection(c));
-    rootCols.forEach(c => renderCollectionItem(c, treeContainer));
+
+    const folderCollections = collections.filter(c => c.folderId === folderId && matchesCollection(c));
+    folderCollections.forEach(col => renderCollectionItem(col, container, level + 1));
 }
-function renderCollectionItem(col, container) {
+
+// Общая функция обработки drop на папку
+function handleDropOnFolder(transferData, targetFolderId) {
+    if (!transferData) return;
+    if (transferData.startsWith('col:')) {
+        const colId = transferData.substring(4);
+        moveCollectionToFolder(colId, targetFolderId);
+    } else if (transferData.startsWith('folder:')) {
+        const folderIdToMove = transferData.substring(7);
+        if (folderIdToMove !== targetFolderId && !isDescendant(targetFolderId, folderIdToMove)) {
+            moveFolderToFolder(folderIdToMove, targetFolderId);
+        }
+    }
+}
+
+// Проверка: является ли folderId потомком ancestorId
+function isDescendant(folderId, ancestorId) {
+    const folder = data.folders.find(f => f.id === folderId);
+    if (!folder) return false;
+    if (folder.parentId === ancestorId) return true;
+    if (!folder.parentId) return false;
+    return isDescendant(folder.parentId, ancestorId);
+}
+
+function renderFolderContents(folderId, container, level) {
+    renderFolderChildren(folderId, container, level);
+}
+
+function renderTree() {
+    treeContainer.innerHTML = '';
+    renderFolderChildren(null, treeContainer, 0);
+
+    // Drop-зона для вытаскивания в корень
+    treeContainer.addEventListener('dragover', e => {
+        e.preventDefault();
+        treeContainer.classList.add('drag-over-root');
+        e.dataTransfer.dropEffect = 'move';
+    });
+    treeContainer.addEventListener('dragleave', e => {
+        if (!treeContainer.contains(e.relatedTarget)) {
+            treeContainer.classList.remove('drag-over-root');
+        }
+    });
+    treeContainer.addEventListener('drop', e => {
+        if (e.target === treeContainer) {
+            e.preventDefault();
+            treeContainer.classList.remove('drag-over-root');
+            const transferData = e.dataTransfer.getData('text/plain');
+            if (transferData.startsWith('col:')) {
+                moveCollectionToFolder(transferData.substring(4), null);
+            } else if (transferData.startsWith('folder:')) {
+                moveFolderToFolder(transferData.substring(7), null);
+            }
+        }
+    });
+}
+
+function renderCollectionItem(col, container, indentLevel = 0) {
     const div = document.createElement('div');
     div.className = `collection-item${activeCollectionId === col.id ? ' active' : ''}`;
     div.dataset.collectionId = col.id;
     div.draggable = true;
-    div.innerHTML = `<span class="collection-name" title="Двойной клик для переименования">📄 ${col.name || 'Без названия'}</span><button class="delete-collection-btn">✕</button><button class="move-to-folder-btn" title="Переместить в папку" style="background:none;border:none;color:var(--text-secondary);margin-left:4px;cursor:pointer;font-size:14px;">📂</button>`;
+    div.style.paddingLeft = (indentLevel * 16) + 'px';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'collection-name';
+    nameSpan.title = 'Двойной клик для переименования';
+    nameSpan.textContent = getCollectionIcon(col) + ' ' + (col.name || 'Без названия');
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'delete-collection-btn';
+    delBtn.textContent = '✕';
+
+    div.appendChild(nameSpan);
+    div.appendChild(delBtn);
+
     div.addEventListener('click', e => {
-        if (e.target.classList.contains('delete-collection-btn') || e.target.classList.contains('move-to-folder-btn')) return;
+        if (e.target.classList.contains('delete-collection-btn')) return;
         selectCollection(col.id);
     });
-    div.querySelector('.delete-collection-btn').addEventListener('click', e => {
+    delBtn.addEventListener('click', async e => {
         e.stopPropagation();
-        if (confirm('Удалить коллекцию?')) {
+        if (await confirmDialog('Удалить коллекцию', 'Удалить эту коллекцию?')) {
             data.collections = data.collections.filter(c => c.id !== col.id);
             if (activeCollectionId === col.id) { activeCollectionId = null; activeCollection = null; showEmptyState(); }
             saveData(); renderTree();
+            toast('Коллекция удалена', 'success');
         }
     });
-    div.querySelector('.collection-name').addEventListener('dblclick', async e => {
+    nameSpan.addEventListener('dblclick', async e => {
         e.stopPropagation();
-        const n = await showInputModal('Новое название коллекции', col.name);
-        if (n) { col.name = n; await saveData(); renderTree(); if (activeCollectionId === col.id) collectionNameInput.value = col.name; }
+        const newName = await showInputModal('Новое название коллекции', col.name);
+        if (newName) {
+            col.name = newName;
+            await saveData();
+            renderTree();
+            if (activeCollectionId === col.id) collectionNameInput.value = col.name;
+            toast('Переименовано', 'success');
+        }
     });
-    div.querySelector('.move-to-folder-btn').addEventListener('click', async e => {
-        e.stopPropagation();
-        const folders = data.folders;
-        if (!folders.length) { alert('Нет доступных папок.'); return; }
-        const choice = await showSelectModal('Выберите папку', folders.map(f => f.name));
-        if (choice !== null) moveCollectionToFolder(col.id, folders[choice].id);
+    div.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', 'col:' + col.id);
+        e.dataTransfer.effectAllowed = 'move';
+        div.classList.add('dragging');
     });
-    div.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', col.id); e.dataTransfer.effectAllowed = 'move'; div.classList.add('dragging'); });
     div.addEventListener('dragend', e => div.classList.remove('dragging'));
     container.appendChild(div);
 }
-async function moveCollectionToFolder(cid, fid) {
-    const col = data.collections.find(c => c.id === cid);
-    if (col) { col.folderId = fid; await saveData(); renderTree(); }
+
+async function moveCollectionToFolder(collectionId, folderId) {
+    const col = data.collections.find(c => c.id === collectionId);
+    if (col) { col.folderId = folderId; await saveData(); renderTree(); }
+}
+
+async function moveFolderToFolder(folderId, newParentId) {
+    const folder = data.folders.find(f => f.id === folderId);
+    if (folder && folderId !== newParentId) {
+        folder.parentId = newParentId;
+        await saveData();
+        renderTree();
+    }
+}
+
+// ================== Автоудаление пустых коллекций ==================
+function cleanupEmptyCollection(colId) {
+    const col = data.collections.find(c => c.id === colId);
+    if (!col) return;
+
+    const isEmpty = !col.steps || col.steps.length === 0;
+    const isDefaultName = col.name === 'Новая коллекция' || !col.name || col.name.trim() === '';
+    const hasNoResults = !col.results || col.results.length === 0;
+
+    if (isEmpty && isDefaultName && hasNoResults) {
+        data.collections = data.collections.filter(c => c.id !== colId);
+        saveData();
+    }
 }
 
 // ================== Выбор коллекции ==================
 function selectCollection(id) {
+    const previousId = activeCollectionId;
+    if (previousId && previousId !== id) {
+        cleanupEmptyCollection(previousId);
+    }
+
     activeCollectionId = id;
     activeCollection = data.collections.find(c => c.id === id);
     if (!activeCollection) return;
     renderCollectionEditor();
     renderTree();
 }
+
 function showEmptyState() { collectionEditorEl.style.display = 'none'; emptyStateEl.style.display = 'block'; }
+
 function renderCollectionEditor() {
     emptyStateEl.style.display = 'none'; collectionEditorEl.style.display = 'block';
     collectionNameInput.value = activeCollection.name || '';
-    collectionNameInput.oninput = () => { activeCollection.name = collectionNameInput.value.trim() || 'Без названия'; saveData(); renderTree(); };
+    collectionNameInput.oninput = () => {
+        activeCollection.name = collectionNameInput.value.trim() || 'Без названия';
+        debouncedSave();
+        renderTree();
+    };
     if (activeCollection.results) renderRunnerTable(activeCollection.results); else runnerResultsBody.innerHTML = '';
     tabBtns.forEach(b => b.classList.remove('active'));
     document.querySelector('[data-tab="runner"]').classList.add('active');
     runnerTab.style.display = 'block'; historyTab.style.display = 'none';
     renderSteps();
 }
+
 function renderSteps() {
     stepsContainer.innerHTML = '';
     if (!activeCollection.steps) activeCollection.steps = [];
@@ -362,42 +652,115 @@ function renderSteps() {
         stepsContainer.appendChild(card);
     });
 }
+
 function createStepCard(step, idx) {
     const card = document.createElement('div');
     card.className = 'step-card';
     card.dataset.index = idx;
     const header = document.createElement('div');
     header.className = 'step-header';
-    header.innerHTML = `<span class="step-name">${step.name || `Шаг ${idx + 1}`}</span><div class="step-actions"><button class="send-btn">▶ Send</button><button class="danger" style="padding:2px 8px;font-size:12px;">Удалить</button></div>`;
-    header.querySelector('.send-btn').addEventListener('click', () => openSendModal(step));
-    header.querySelector('.danger').addEventListener('click', () => { activeCollection.steps.splice(idx, 1); saveData(); renderSteps(); });
-    const fieldsHtml = `
-    <div class="field"><label>Название шага</label><input type="text" class="step-name-input" value="${step.name || ''}" placeholder="Например: Логин"></div>
-    <div class="field"><label>URL</label><input type="text" class="step-url" value="${step.url || ''}" placeholder="http://api.example.com/{id}"></div>
-    <div style="display:flex; gap:10px;">
-      <div class="field" style="flex:1;"><label>Метод</label><select class="step-method">
-        <option ${step.method === 'GET' ? 'selected' : ''}>GET</option>
-        <option ${step.method === 'POST' ? 'selected' : ''}>POST</option>
-        <option ${step.method === 'PUT' ? 'selected' : ''}>PUT</option>
-        <option ${step.method === 'PATCH' ? 'selected' : ''}>PATCH</option>
-        <option ${step.method === 'DELETE' ? 'selected' : ''}>DELETE</option>
-      </select></div>
-      <div class="field" style="flex:1;"><label>Content-Type</label><input type="text" class="step-content-type" value="${step.contentType || 'application/vnd.api+json'}"></div>
-    </div>
-    <div class="field"><label>Authorization</label><input type="text" class="step-auth" value="${step.auth || ''}" placeholder="Bearer токен"></div>
-    <div class="field"><label>Тело запроса</label><textarea class="step-body" rows="4">${step.body || ''}</textarea></div>
-    <div class="field"><label>Доп. заголовки (через запятую key:value)</label><input type="text" class="step-headers" value="${step.customHeaders ? Object.entries(step.customHeaders).map(([k, v]) => `${k}:${v}`).join(', ') : ''}" placeholder="X-API-Key: abc123, Accept: application/json"></div>
-  `;
+
+    const nameSpan = txt('span', step.name || `Шаг ${idx + 1}`, 'step-name');
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'step-actions';
+
+    const sendBtn = document.createElement('button');
+    sendBtn.className = 'send-btn';
+    sendBtn.textContent = '▶ Send';
+    sendBtn.addEventListener('click', () => openSendModal(step));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.style.cssText = 'padding:2px 8px;font-size:12px;';
+    delBtn.textContent = 'Удалить';
+    delBtn.addEventListener('click', async () => {
+        if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) {
+            activeCollection.steps.splice(idx, 1);
+            saveData(); renderSteps();
+            toast('Шаг удалён', 'success');
+        }
+    });
+
+    actionsDiv.appendChild(sendBtn);
+    actionsDiv.appendChild(delBtn);
+    header.appendChild(nameSpan);
+    header.appendChild(actionsDiv);
     card.appendChild(header);
-    card.insertAdjacentHTML('beforeend', fieldsHtml);
+
+    const createField = (labelText, tag, className, value, placeholder) => {
+        const field = document.createElement('div');
+        field.className = 'field';
+        const label = txt('label', labelText);
+        let input;
+        if (tag === 'textarea') {
+            input = document.createElement('textarea');
+            input.rows = 4;
+            input.value = value || '';
+        } else if (tag === 'select') {
+            input = document.createElement('select');
+            ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m; opt.textContent = m;
+                if (m === value) opt.selected = true;
+                input.appendChild(opt);
+            });
+        } else {
+            input = document.createElement('input');
+            input.type = tag;
+            input.value = value || '';
+            if (placeholder) input.placeholder = placeholder;
+        }
+        input.className = className;
+        field.appendChild(label);
+        field.appendChild(input);
+        return { field, input };
+    };
+
+    const nameField = createField('Название шага', 'text', 'step-name-input', step.name, 'Например: Логин');
+    const urlField = createField('URL', 'text', 'step-url', step.url, 'http://api.example.com/{id}');
+
+    const methodRow = document.createElement('div');
+    methodRow.style.cssText = 'display:flex; gap:10px;';
+    const methodField = document.createElement('div');
+    methodField.className = 'field';
+    methodField.style.flex = '1';
+    const methodLabel = txt('label', 'Метод');
+    const methodSelect = document.createElement('select');
+    methodSelect.className = 'step-method';
+    ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        if (m === step.method) opt.selected = true;
+        methodSelect.appendChild(opt);
+    });
+    methodField.appendChild(methodLabel);
+    methodField.appendChild(methodSelect);
+
+    const ctField = createField('Content-Type', 'text', 'step-content-type', step.contentType || 'application/vnd.api+json');
+    methodRow.appendChild(methodField);
+    methodRow.appendChild(ctField.field);
+
+    const authField = createField('Authorization', 'text', 'step-auth', step.auth, 'Bearer токен');
+    const bodyField = createField('Тело запроса', 'textarea', 'step-body', step.body);
+
+    const customHeadersStr = step.customHeaders ? Object.entries(step.customHeaders).map(([k, v]) => `${k}:${v}`).join(', ') : '';
+    const headersField = createField('Доп. заголовки (через запятую key:value)', 'text', 'step-headers', customHeadersStr, 'X-API-Key: abc123, Accept: application/json');
+
+    card.appendChild(nameField.field);
+    card.appendChild(urlField.field);
+    card.appendChild(methodRow);
+    card.appendChild(authField.field);
+    card.appendChild(bodyField.field);
+    card.appendChild(headersField.field);
+
     const save = () => {
-        step.name = card.querySelector('.step-name-input').value.trim();
-        step.url = card.querySelector('.step-url').value.trim();
-        step.method = card.querySelector('.step-method').value;
-        step.contentType = card.querySelector('.step-content-type').value.trim();
-        step.auth = card.querySelector('.step-auth').value.trim();
-        step.body = card.querySelector('.step-body').value;
-        const hStr = card.querySelector('.step-headers').value.trim();
+        step.name = nameField.input.value.trim();
+        step.url = urlField.input.value.trim();
+        step.method = methodSelect.value;
+        step.contentType = ctField.input.value.trim();
+        step.auth = authField.input.value.trim();
+        step.body = bodyField.input.value;
+        const hStr = headersField.input.value.trim();
         if (hStr) {
             const obj = {};
             hStr.split(',').forEach(p => {
@@ -406,35 +769,55 @@ function createStepCard(step, idx) {
             });
             step.customHeaders = obj;
         } else step.customHeaders = {};
-        card.querySelector('.step-name').textContent = step.name || `Шаг ${idx + 1}`;
-        saveData();
+        nameSpan.textContent = step.name || `Шаг ${idx + 1}`;
+        debouncedSave();
     };
-    card.querySelectorAll('input, select, textarea').forEach(el => el.addEventListener('input', save));
+    [nameField.input, urlField.input, methodSelect, ctField.input, authField.input, bodyField.input, headersField.input]
+        .forEach(el => el.addEventListener('input', save));
     return card;
 }
 
 // ================== Раннер ==================
 runCollectionBtn.addEventListener('click', async () => {
     if (!activeCollection || !activeCollection.steps || activeCollection.steps.length === 0) {
-        alert('Добавьте хотя бы один шаг в коллекцию.'); return;
+        toast('Добавьте хотя бы один шаг в коллекцию.', 'warning'); return;
     }
     let items;
-    try { items = await readDataFile(); } catch (e) { alert('Ошибка чтения файла данных: ' + e.message); return; }
+    try { items = await readDataFile(); } catch (e) { toast('Ошибка чтения файла данных: ' + e.message, 'error'); return; }
     const delay = parseInt(delayInput.value, 10) || 0;
     if (!activeCollection.results) activeCollection.results = [];
     else activeCollection.results.length = 0;
     runnerResultsBody.innerHTML = '';
     progressEl.textContent = 'Запуск...';
-    await window.api.runCollection(activeCollection.steps, items, delay, activeCollection.name);
-    progressEl.textContent = 'Готово.';
+    try {
+        await window.api.runCollection(activeCollection.steps, items, delay, activeCollection.name);
+        progressEl.textContent = 'Готово.';
+        toast('Коллекция выполнена', 'success');
+    } catch (e) {
+        progressEl.textContent = 'Ошибка: ' + e.message;
+        toast('Ошибка выполнения: ' + e.message, 'error');
+    }
 });
-window.api.onProgress((data) => {
-    const { item, stepName, success, status, error, response } = data;
+
+window.api.onProgress((progressData) => {
+    const { item, stepName, success, status, error, response } = progressData;
     const row = document.createElement('tr');
     row.className = success ? 'success' : 'error';
     row.dataset.responseData = response ? JSON.stringify(response) : '';
     row.dataset.error = error || '';
-    row.innerHTML = `<td>${item}</td><td>${stepName}</td><td><span class="status-badge ${success ? 'status-success' : 'status-error'}">${success ? '✓ ' + status : '✗ ' + (status || 'ERROR')}</span></td>`;
+    row.dataset.item = item;
+    row.dataset.stepName = stepName;
+
+    const td1 = txt('td', item);
+    const td2 = txt('td', stepName);
+    const td3 = document.createElement('td');
+    const badge = txt('span', success ? '✓ ' + status : '✗ ' + (status || 'ERROR'),
+        'status-badge ' + (success ? 'status-success' : 'status-error'));
+    td3.appendChild(badge);
+
+    row.appendChild(td1);
+    row.appendChild(td2);
+    row.appendChild(td3);
     runnerResultsBody.appendChild(row);
     if (activeCollection) {
         if (!activeCollection.results) activeCollection.results = [];
@@ -443,6 +826,7 @@ window.api.onProgress((data) => {
     row.addEventListener('dblclick', () => showResponseDetails(row));
     progressEl.textContent = `Элемент: ${item} → ${stepName}`;
 });
+
 function renderRunnerTable(results) {
     runnerResultsBody.innerHTML = '';
     results.forEach(r => {
@@ -450,7 +834,19 @@ function renderRunnerTable(results) {
         row.className = r.success ? 'success' : 'error';
         row.dataset.responseData = r.responseData || '';
         row.dataset.error = r.error || '';
-        row.innerHTML = `<td>${r.item}</td><td>${r.stepName}</td><td><span class="status-badge ${r.success ? 'status-success' : 'status-error'}">${r.success ? '✓ ' + r.status : '✗ ' + (r.status || 'ERROR')}</span></td>`;
+        row.dataset.item = r.item;
+        row.dataset.stepName = r.stepName;
+
+        const td1 = txt('td', r.item);
+        const td2 = txt('td', r.stepName);
+        const td3 = document.createElement('td');
+        const badge = txt('span', r.success ? '✓ ' + r.status : '✗ ' + (r.status || 'ERROR'),
+            'status-badge ' + (r.success ? 'status-success' : 'status-error'));
+        td3.appendChild(badge);
+
+        row.appendChild(td1);
+        row.appendChild(td2);
+        row.appendChild(td3);
         row.addEventListener('dblclick', () => showResponseDetails(row));
         runnerResultsBody.appendChild(row);
     });
@@ -461,21 +857,28 @@ function openSendModal(step) { currentStepForSend = step; testDataInput.value = 
 sendSingleBtn.addEventListener('click', async () => {
     if (!currentStepForSend) return;
     const td = testDataInput.value.trim();
-    try { if (td) JSON.parse(td); } catch (e) { alert('Некорректный JSON'); return; }
+    try { if (td) JSON.parse(td); } catch (e) { toast('Некорректный JSON', 'error'); return; }
     sendSingleBtn.disabled = true; sendSingleBtn.textContent = 'Отправка...';
-    const res = await window.api.sendSingleRequest(currentStepForSend, td || '{}', activeCollection?.name || '');
-    sendSingleBtn.disabled = false; sendSingleBtn.textContent = '▶ Отправить';
-    sendRequestModal.classList.remove('active');
-    const rd = { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data, url: res.url };
-    buildDetailContent({
-        responseData: JSON.stringify(rd),
-        error: res.success ? null : res.statusText,
-        url: res.url, requestBody: res.requestBody, requestHeaders: res.requestHeaders,
-        item: `Тестовые данные: ${td || '{}'}`,
-        stepName: currentStepForSend.name || 'Одиночный запрос',
-    });
-    detailModalTitle.textContent = `Результат: ${currentStepForSend.name || 'Одиночный запрос'}`;
-    detailModal.classList.add('active');
+    try {
+        const res = await window.api.sendSingleRequest(currentStepForSend, td || '{}', activeCollection?.name || '');
+        sendSingleBtn.disabled = false; sendSingleBtn.textContent = '▶ Отправить';
+        sendRequestModal.classList.remove('active');
+        const rd = { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data, url: res.url };
+        buildDetailContent({
+            responseData: JSON.stringify(rd),
+            error: res.success ? null : res.statusText,
+            url: res.url, requestBody: res.requestBody, requestHeaders: res.requestHeaders,
+            item: `Тестовые данные: ${td || '{}'}`,
+            stepName: currentStepForSend.name || 'Одиночный запрос',
+        });
+        detailModalTitle.textContent = `Результат: ${currentStepForSend.name || 'Одиночный запрос'}`;
+        detailModal.classList.add('active');
+        if (res.success) toast('Запрос выполнен успешно', 'success');
+        else toast(`Ошибка: ${res.statusText}`, 'error');
+    } catch (e) {
+        sendSingleBtn.disabled = false; sendSingleBtn.textContent = '▶ Отправить';
+        toast('Ошибка: ' + e.message, 'error');
+    }
 });
 
 // ================== История ==================
@@ -492,7 +895,26 @@ function renderFilteredHistory() {
     (val ? fullHistory.filter(h => h.collection === val) : fullHistory).forEach(e => {
         const row = document.createElement('tr');
         row.className = e.success ? 'success' : 'error';
-        row.innerHTML = `<td>${new Date(e.timestamp).toLocaleString()}</td><td>${e.collection || '—'}</td><td>${e.type === 'single' ? 'Send' : 'Runner'}</td><td>${e.item}</td><td>${e.stepName}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e.url}</td><td><span class="status-badge ${e.success ? 'status-success' : 'status-error'}">${e.success ? '✓ ' + e.status : '✗ ' + e.status}</span></td>`;
+
+        const tdTime = txt('td', new Date(e.timestamp).toLocaleString());
+        const tdCol = txt('td', e.collection || '—');
+        const tdType = txt('td', e.type === 'single' ? 'Send' : 'Runner');
+        const tdItem = txt('td', e.item);
+        const tdStep = txt('td', e.stepName);
+        const tdUrl = txt('td', e.url);
+        tdUrl.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        const tdStatus = document.createElement('td');
+        const badge = txt('span', e.success ? '✓ ' + e.status : '✗ ' + e.status,
+            'status-badge ' + (e.success ? 'status-success' : 'status-error'));
+        tdStatus.appendChild(badge);
+
+        row.appendChild(tdTime);
+        row.appendChild(tdCol);
+        row.appendChild(tdType);
+        row.appendChild(tdItem);
+        row.appendChild(tdStep);
+        row.appendChild(tdUrl);
+        row.appendChild(tdStatus);
         row.addEventListener('dblclick', () => showHistoryDetail(e));
         historyTableBody.appendChild(row);
     });
@@ -510,7 +932,12 @@ function showHistoryDetail(e) {
 }
 refreshHistoryBtn.addEventListener('click', loadHistory);
 clearHistoryBtn.addEventListener('click', async () => {
-    if (confirm('Очистить всю историю?')) { await window.api.clearHistory(); fullHistory = []; historyTableBody.innerHTML = ''; }
+    if (await confirmDialog('Очистить историю', 'Очистить всю историю запросов?')) {
+        await window.api.clearHistory();
+        fullHistory = [];
+        historyTableBody.innerHTML = '';
+        toast('История очищена', 'success');
+    }
 });
 historyFilter.addEventListener('change', renderFilteredHistory);
 
@@ -519,12 +946,13 @@ function showResponseDetails(row) {
     buildDetailContent({
         responseData: row.dataset.responseData,
         error: row.dataset.error,
-        item: row.cells[0].textContent,
-        stepName: row.cells[1].textContent,
+        item: row.dataset.item,
+        stepName: row.dataset.stepName,
     });
-    detailModalTitle.textContent = `Детали: ${row.cells[1].textContent}`;
+    detailModalTitle.textContent = `Детали: ${row.dataset.stepName}`;
     detailModal.classList.add('active');
 }
+
 function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders }) {
     let html = '';
     if (responseData && responseData !== 'null' && responseData !== 'undefined') {
@@ -532,7 +960,7 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
             const resp = JSON.parse(responseData);
             const st = resp.status || '';
             const cls = st >= 200 && st < 300 ? 'success' : 'error';
-            html += `<div class="detail-section"><h3>Статус</h3><span class="detail-status ${cls}">${st} ${resp.statusText || ''}</span></div>`;
+            html += `<div class="detail-section"><h3>Статус</h3><span class="detail-status ${cls}">${escapeHtml(String(st))} ${escapeHtml(resp.statusText || '')}</span></div>`;
             html += `<div class="detail-section"><h3>Общая информация</h3>`;
             if (item) html += `<div class="detail-field"><div class="detail-field-label">Элемент</div><div class="detail-field-value">${escapeHtml(item)}</div></div>`;
             if (stepName) html += `<div class="detail-field"><div class="detail-field-label">Шаг</div><div class="detail-field-value">${escapeHtml(stepName)}</div></div>`;
@@ -542,23 +970,46 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
             if (requestBody) html += `<div class="detail-section"><h3>Тело запроса</h3><div class="detail-field-value">${escapeHtml(requestBody)}<button class="copy-btn" data-copy="${escapeHtml(requestBody)}">📋 Копировать</button></div></div>`;
             if (resp.headers) html += `<div class="detail-section"><h3>Заголовки ответа</h3><div class="detail-field-value">${escapeHtml(JSON.stringify(resp.headers, null, 2))}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.headers, null, 2))}">📋 Копировать</button></div></div>`;
             html += `<div class="detail-section"><h3>Тело ответа</h3><div class="detail-field-value">${escapeHtml(JSON.stringify(resp.data, null, 2))}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.data, null, 2))}">📋 Копировать</button></div></div>`;
-        } catch (e) { html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${escapeHtml(responseData)}</div></div>`; }
-    } else { html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">Нет данных</div></div>`; }
-    if (error) html += `<div class="detail-section"><h3>Ошибка</h3><div class="detail-field-value" style="color:var(--danger);">${escapeHtml(error)}</div></div>`;
+        } catch (e) { 
+            html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${escapeHtml(responseData)}</div></div>`; 
+        }
+    } else { 
+        html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">Нет данных</div></div>`; 
+    }
+    
+    if (error) {
+        html += `<div class="detail-section"><h3>Ошибка</h3>`;
+        html += `<div class="detail-field-value" style="color:var(--danger);">${escapeHtml(error)}`;
+        
+        try {
+            if (responseData) {
+                const parsed = JSON.parse(responseData);
+                if (parsed.data?.errors?.[0]) {
+                    const serverErr = parsed.data.errors[0];
+                    html += `<br><br><strong>Детали от сервера:</strong><br>`;
+                    html += `<strong>Статус:</strong> ${escapeHtml(serverErr.status || '')}<br>`;
+                    html += `<strong>Заголовок:</strong> ${escapeHtml(serverErr.title || '')}<br>`;
+                    if (serverErr.detail) {
+                        html += `<strong>Описание:</strong> ${escapeHtml(serverErr.detail)}<br>`;
+                    }
+                }
+            }
+        } catch (e) { /* не JSON */ }
+        
+        html += `</div></div>`;
+    }
+    
     detailContent.innerHTML = html;
     detailContent.querySelectorAll('[data-copy]').forEach(btn => {
         btn.addEventListener('click', () => {
-            const txt = btn.getAttribute('data-copy');
-            navigator.clipboard.writeText(txt).then(() => {
-                const orig = btn.textContent; btn.textContent = '✓ Скопировано';
+            const txt2 = btn.getAttribute('data-copy');
+            navigator.clipboard.writeText(txt2).then(() => {
+                const orig = btn.textContent; 
+                btn.textContent = '✓ Скопировано';
                 setTimeout(() => btn.textContent = orig, 2000);
             });
         });
     });
-}
-function escapeHtml(t) {
-    if (typeof t !== 'string') return t;
-    return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
 // ================== Генератор JSON ==================
@@ -575,8 +1026,18 @@ let generatedJsonString = '';
 addFieldBtn.addEventListener('click', () => {
     const row = document.createElement('div');
     row.className = 'field-row';
-    row.innerHTML = `<input type="text" placeholder="Название поля" class="field-name" style="flex:1;"><input type="text" placeholder="Значения через запятую" class="field-values" style="flex:2;"><button class="remove-field-btn">✕</button>`;
-    row.querySelector('.remove-field-btn').addEventListener('click', () => row.remove());
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text'; nameInput.placeholder = 'Название поля'; nameInput.className = 'field-name';
+    nameInput.style.flex = '1';
+    const valuesInput = document.createElement('input');
+    valuesInput.type = 'text'; valuesInput.placeholder = 'Значения через запятую'; valuesInput.className = 'field-values';
+    valuesInput.style.flex = '2';
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-field-btn'; removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', () => row.remove());
+    row.appendChild(nameInput);
+    row.appendChild(valuesInput);
+    row.appendChild(removeBtn);
     fieldsContainer.appendChild(row);
 });
 generateJsonBtn.addEventListener('click', () => {
@@ -586,9 +1047,9 @@ generateJsonBtn.addEventListener('click', () => {
         const v = row.querySelector('.field-values').value.trim();
         if (n && v) fields.push({ name: n, values: v.split(',').map(s => s.trim()) });
     });
-    if (!fields.length) { alert('Добавьте хотя бы одно поле.'); return; }
+    if (!fields.length) { toast('Добавьте хотя бы одно поле.', 'warning'); return; }
     const lengths = fields.map(f => f.values.length);
-    if (new Set(lengths).size > 1) { alert('Количество значений во всех полях должно быть одинаковым.'); return; }
+    if (new Set(lengths).size > 1) { toast('Количество значений во всех полях должно быть одинаковым.', 'error'); return; }
     const result = [];
     for (let i = 0; i < lengths[0]; i++) {
         const obj = {};
@@ -601,181 +1062,113 @@ generateJsonBtn.addEventListener('click', () => {
 saveJsonBtn.addEventListener('click', async () => {
     if (!generatedJsonString) return;
     const r = await window.api.saveFile(generatedJsonString);
-    if (r.success) alert(`Файл сохранён: ${r.filePath}`);
+    if (r.success) toast(`Файл сохранён: ${r.filePath}`, 'success');
 });
 
-// ================== Импорт cURL (переработанная версия) ==================
+// ================== Импорт cURL ==================
 function parseCurl(cmd) {
-    // Убираем line continuation (обратный слеш + перевод строки)
     let c = cmd.replace(/\\\r?\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
     if (!c.startsWith('curl ')) return null;
-
-    // Убираем начальное "curl "
     c = c.substring(5);
-
     const tokens = [];
-    let current = '';
-    let i = 0;
-    const STATE = { NORMAL: 0, SQ: 1, DQ: 2 };
-    let state = STATE.NORMAL;
-
-    while (i < c.length) {
+    let current = '', state = 0;
+    for (let i = 0; i < c.length; i++) {
         const ch = c[i];
-        if (state === STATE.NORMAL) {
+        if (state === 0) {
             if (ch === ' ') {
-                if (current !== '') {
-                    tokens.push(current);
-                    current = '';
-                }
-            } else if (ch === "'") {
-                state = STATE.SQ;
-            } else if (ch === '"') {
-                state = STATE.DQ;
-            } else if (ch === '\\') {
-                // обратный слеш экранирует следующий символ (даже пробел)
-                if (i + 1 < c.length) {
-                    current += c[i + 1];
-                    i++;
-                } else {
-                    current += '\\';
-                }
-            } else {
-                current += ch;
-            }
-        } else if (state === STATE.SQ) {
+                if (current) { tokens.push(current); current = ''; }
+            } else if (ch === "'") { state = 1; }
+            else if (ch === '"') { state = 2; }
+            else if (ch === '\\' && i + 1 < c.length) { current += c[++i]; }
+            else { current += ch; }
+        } else if (state === 1) {
             if (ch === "'") {
-                if (i + 1 < c.length && c[i + 1] === "'") {
-                    // '\'' — экранированный апостроф внутри одинарных кавычек
-                    current += "'";
-                    i++;
-                } else {
-                    // закрывающая кавычка
-                    state = STATE.NORMAL;
-                }
-            } else {
-                current += ch;
-            }
-        } else if (state === STATE.DQ) {
-            if (ch === '\\' && i + 1 < c.length) {
-                // в двойных кавычках \ экранирует следующий символ (обычно " \ $ ` и т.д.)
-                current += c[i + 1];
-                i++;
-            } else if (ch === '"') {
-                state = STATE.NORMAL;
-            } else {
-                current += ch;
-            }
+                if (i + 1 < c.length && c[i + 1] === "'") { current += "'"; i++; }
+                else { state = 0; }
+            } else { current += ch; }
+        } else if (state === 2) {
+            if (ch === '\\' && i + 1 < c.length) { current += c[++i]; }
+            else if (ch === '"') { state = 0; }
+            else { current += ch; }
         }
-        i++;
     }
-    if (current !== '') {
-        tokens.push(current);
-    }
-
-    // Теперь интерпретируем токены
+    if (current) tokens.push(current);
     const result = { method: 'GET', url: '', headers: {}, body: null };
     let iTok = 0;
     while (iTok < tokens.length) {
         const token = tokens[iTok];
-
-        // Пропускаем флаги без значений
-        if (['--location', '--compressed', '--silent', '--insecure'].includes(token)) {
-            iTok++;
-            continue;
-        }
-
-        // Метод
-        if (token === '-X' || token === '--request') {
-            if (iTok + 1 < tokens.length) {
-                result.method = tokens[iTok + 1].toUpperCase();
-                iTok += 2;
-            } else iTok++;
-            continue;
-        }
-
-        // Заголовок
+        if (['--location', '--compressed', '--silent', '--insecure'].includes(token)) { iTok++; continue; }
+        if (token === '-X' || token === '--request') { if (iTok + 1 < tokens.length) { result.method = tokens[iTok + 1].toUpperCase(); iTok += 2; } else iTok++; continue; }
         if (token === '-H' || token === '--header') {
             if (iTok + 1 < tokens.length) {
                 const headerStr = tokens[iTok + 1];
                 const colonIndex = headerStr.indexOf(':');
-                if (colonIndex > 0) {
-                    const key = headerStr.substring(0, colonIndex).trim();
-                    const value = headerStr.substring(colonIndex + 1).trim();
-                    if (key) result.headers[key] = value;
-                }
+                if (colonIndex > 0) { const key = headerStr.substring(0, colonIndex).trim(); const value = headerStr.substring(colonIndex + 1).trim(); if (key) result.headers[key] = value; }
                 iTok += 2;
             } else iTok++;
             continue;
         }
-
-        // Тело запроса
-        if (['--data', '--data-raw', '-d', '--data-binary'].includes(token)) {
-            if (iTok + 1 < tokens.length) {
-                result.body = tokens[iTok + 1];
-                iTok += 2;
-            } else iTok++;
-            continue;
-        }
-
-        // Если токен не начинается с '-', считаем его URL (последний такой перезапишет)
-        if (!token.startsWith('-')) {
-            result.url = token;
-            iTok++;
-            continue;
-        }
-
-        // Неизвестный флаг — если за ним следует не флаг, пропускаем оба
-        if (iTok + 1 < tokens.length && !tokens[iTok + 1].startsWith('-')) {
-            iTok += 2;
-        } else {
-            iTok++;
-        }
+        if (['--data', '--data-raw', '-d', '--data-binary'].includes(token)) { if (iTok + 1 < tokens.length) { result.body = tokens[iTok + 1]; iTok += 2; } else iTok++; continue; }
+        if (!token.startsWith('-')) { result.url = token; iTok++; continue; }
+        if (iTok + 1 < tokens.length && !tokens[iTok + 1].startsWith('-')) { iTok += 2; } else iTok++;
     }
-
     return result;
 }
-
 importCurlBtn.addEventListener('click', () => {
-    if (!activeCollection) { alert('Сначала выберите коллекцию.'); return; }
+    if (!activeCollection) { toast('Сначала выберите коллекцию.', 'warning'); return; }
     document.getElementById('curlInput').value = '';
     document.getElementById('curlModal').classList.add('active');
 });
 document.getElementById('closeCurlModalBtn').addEventListener('click', () => document.getElementById('curlModal').classList.remove('active'));
 document.getElementById('parseCurlBtn').addEventListener('click', () => {
-    const txt = document.getElementById('curlInput').value.trim();
-    if (!txt) { alert('Введите команду cURL'); return; }
-    const p = parseCurl(txt);
-    if (!p) { alert('Не удалось распознать cURL'); return; }
+    const txt2 = document.getElementById('curlInput').value.trim();
+    if (!txt2) { toast('Введите команду cURL', 'warning'); return; }
+    const p = parseCurl(txt2);
+    if (!p) { toast('Не удалось распознать cURL', 'error'); return; }
     const newStep = {
-        name: '',
-        url: p.url,
-        method: p.method,
+        name: '', url: p.url, method: p.method,
         contentType: p.headers['Content-Type'] || 'application/json',
         auth: p.headers['Authorization'] || '',
         body: p.body || '',
         customHeaders: {}
     };
-    delete p.headers['Authorization'];
-    delete p.headers['Content-Type'];
+    delete p.headers['Authorization']; delete p.headers['Content-Type'];
     newStep.customHeaders = p.headers;
     activeCollection.steps.push(newStep);
-    saveData();
-    renderSteps();
+    saveData(); renderSteps();
     document.getElementById('curlModal').classList.remove('active');
+    toast('Шаг импортирован из cURL', 'success');
 });
+
 // ================== Кнопки папок и коллекций ==================
+newRootCollectionBtn.addEventListener('click', async () => {
+    const newCol = {
+        id: generateUniqueId(),
+        name: 'Новая коллекция',
+        steps: [],
+        folderId: null,
+    };
+    data.collections.push(newCol);
+    await saveData();
+    selectCollection(newCol.id);
+    renderTree();
+});
+
 newFolderBtn.addEventListener('click', async () => {
     const name = await showInputModal('Название папки', 'Новая папка');
-    if (name) { data.folders.push({ id: Date.now().toString(), name }); await saveData(); renderTree(); }
+    if (name) {
+        data.folders.push({ id: generateUniqueId(), name, parentId: null, collapsed: false });
+        await saveData();
+        renderTree();
+        toast('Папка создана', 'success');
+    }
 });
-newCollectionBtn.addEventListener('click', async () => {
-    const col = { id: Date.now().toString(), name: 'Новая коллекция', steps: [], folderId: null };
-    data.collections.push(col); await saveData(); selectCollection(col.id); renderTree();
-});
+
 addStepBtn.addEventListener('click', () => {
     if (!activeCollection) return;
     activeCollection.steps.push({ name: '', url: '', method: 'GET', contentType: 'application/json', auth: '', body: '', customHeaders: {} });
-    saveData(); renderSteps();
+    saveData();
+    renderSteps();
 });
 
 // ================== Вкладки ==================
@@ -808,206 +1201,39 @@ dataFileInput.addEventListener('change', () => {
     selectedFileName.textContent = dataFileInput.files.length ? dataFileInput.files[0].name : 'Файл не выбран';
 });
 
-// ------------------- Импорт Postman -------------------
-importPostmanBtn.addEventListener('click', () => {
-    postmanFileInput.click();
-});
-
-function parsePostmanCollection(collectionJson) {
-    const steps = [];
-    function processItems(items, prefix = '') {
-        if (!Array.isArray(items)) return;
-        items.forEach(item => {
-            if (item.request) {
-                // Это запрос
-                const req = item.request;
-                const url = (req.url && (typeof req.url === 'object' ? req.url.raw : req.url)) || '';
-                const method = req.method || 'GET';
-                const headers = {};
-                if (Array.isArray(req.header)) {
-                    req.header.forEach(h => {
-                        if (h.key && h.value) headers[h.key] = h.value;
-                    });
-                }
-                let body = '';
-                if (req.body && req.body.mode === 'raw' && req.body.raw) {
-                    body = req.body.raw;
-                }
-                steps.push({
-                    name: prefix + item.name,
-                    url: url,
-                    method: method,
-                    contentType: headers['Content-Type'] || 'application/json',
-                    auth: headers['Authorization'] || '',
-                    body: body,
-                    customHeaders: Object.fromEntries(
-                        Object.entries(headers).filter(([k]) => k !== 'Authorization' && k !== 'Content-Type')
-                    )
-                });
-            } else if (item.item) {
-                // Это папка – рекурсивно с префиксом
-                processItems(item.item, prefix + item.name + ' / ');
-            }
-        });
-    }
-    processItems(collectionJson.item);
-    return steps;
-}
-function parsePostmanCollection(collectionJson) {
-    const steps = [];
-    function processItems(items, prefix = '') {
-        if (!Array.isArray(items)) return;
-        items.forEach(item => {
-            if (item.request) {
-                // Это запрос
-                const req = item.request;
-                const url = (req.url && (typeof req.url === 'object' ? req.url.raw : req.url)) || '';
-                const method = req.method || 'GET';
-                const headers = {};
-                if (Array.isArray(req.header)) {
-                    req.header.forEach(h => {
-                        if (h.key && h.value) headers[h.key] = h.value;
-                    });
-                }
-                let body = '';
-                if (req.body && req.body.mode === 'raw' && req.body.raw) {
-                    body = req.body.raw;
-                }
-                steps.push({
-                    name: prefix + item.name,
-                    url: url,
-                    method: method,
-                    contentType: headers['Content-Type'] || 'application/json',
-                    auth: headers['Authorization'] || '',
-                    body: body,
-                    customHeaders: Object.fromEntries(
-                        Object.entries(headers).filter(([k]) => k !== 'Authorization' && k !== 'Content-Type')
-                    )
-                });
-            } else if (item.item) {
-                // Папка – рекурсивно с префиксом
-                processItems(item.item, prefix + item.name + ' / ');
-            }
-        });
-    }
-    if (collectionJson.item) {
-        processItems(collectionJson.item);
-    }
-    return steps;
-}
-
-// Импорт одной коллекции (создаёт новую коллекцию в данных)
-async function importSinglePostmanCollection(collectionJson) {
-    const collectionName = (collectionJson.info && collectionJson.info.name) ? collectionJson.info.name : 'Postman Import';
-    const steps = parsePostmanCollection(collectionJson);
-    if (steps.length === 0) {
-        console.warn(`Коллекция "${collectionName}" не содержит запросов, пропущена.`);
-        return;
-    }
-    const newCol = {
-        id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-        name: collectionName,
-        steps: steps,
-        folderId: null,
-    };
-    data.collections.push(newCol);
-    await saveData();
-    selectCollection(newCol.id);
-    renderTree();
-}
-
-// Обработка окружений (сохраняет переменные в JSON-файлы)
-async function handlePostmanEnvironments(environments) {
-    if (!environments.length) return;
-    const proceed = confirm(`Найдено ${environments.length} окружений. Сохранить переменные каждого как JSON-файл?`);
-    if (!proceed) return;
-    for (const env of environments) {
-        const envName = env.name || 'environment';
-        const variables = {};
-        if (env.values && Array.isArray(env.values)) {
-            env.values.forEach(v => {
-                if (v.key && v.value !== undefined) {
-                    variables[v.key] = v.value;
-                }
-            });
-        }
-        const content = JSON.stringify(variables, null, 2);
-        const res = await window.api.saveFile(content, `${envName}.json`);
-        if (res.success) {
-            console.log(`Окружение "${envName}" сохранено в ${res.filePath}`);
-        } else {
-            console.warn(`Сохранение окружения "${envName}" отменено.`);
-        }
-    }
-}
-
-// Главный обработчик выбора файла
-postmanFileInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-        const text = await file.text();
-        const json = JSON.parse(text);
-
-        // Определяем структуру
-        if (Array.isArray(json)) {
-            // массив коллекций
-            for (const col of json) {
-                await importSinglePostmanCollection(col);
-            }
-        } else if (json.collections && Array.isArray(json.collections)) {
-            // Data Dump
-            for (const col of json.collections) {
-                await importSinglePostmanCollection(col);
-            }
-            if (json.environments && Array.isArray(json.environments)) {
-                await handlePostmanEnvironments(json.environments);
-            }
-        } else if (json.info && json.item) {
-            // Одиночная коллекция v2.1
-            await importSinglePostmanCollection(json);
-        } else {
-            alert('Файл не содержит коллекций Postman в известном формате.');
-            return;
-        }
-        alert('Импорт завершён.');
-    } catch (err) {
-        alert('Ошибка при импорте Postman: ' + err.message);
-    }
-    postmanFileInput.value = '';
-});
-// Горячие клавиши
-document.addEventListener('keydown', (e) => {
-    // Ctrl+Enter — запуск раннера
-    if (e.ctrlKey && e.key === 'Enter') {
+// ================== Горячие клавиши ==================
+document.addEventListener('keydown', async (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        document.getElementById('runCollectionBtn').click();
+        await saveData();
+        toast('Сохранено', 'success', 1500);
     }
-    // Ctrl+B — скрыть/показать боковую панель
-    if (e.ctrlKey && e.key === 'b') {
-        e.preventDefault();
-        toggleSidebarBtn.click();
-    }
-    // Ctrl+N — новая коллекция
-    if (e.ctrlKey && e.key === 'n' && !e.shiftKey) {
-        e.preventDefault();
-        newCollectionBtn.click();
-    }
-    // Ctrl+Shift+N — новая папка
-    if (e.ctrlKey && e.shiftKey && e.key === 'N') {
-        e.preventDefault();
-        newFolderBtn.click();
-    }
-    // Escape — закрыть все модальные окна
     if (e.key === 'Escape') {
         document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
-        // Если окно Send было открыто, сбросить текущий шаг
+        currentStepForSend = null;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         if (sendRequestModal.classList.contains('active')) {
-            sendRequestModal.classList.remove('active');
-            currentStepForSend = null;
+            sendSingleBtn.click();
         }
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        newRootCollectionBtn.click();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+    }
 });
+
+window.addEventListener('beforeunload', () => {
+    if (activeCollectionId) {
+        cleanupEmptyCollection(activeCollectionId);
+    }
+});
+
 // Старт
 loadData();
 showEmptyState();
