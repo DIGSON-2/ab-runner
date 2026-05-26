@@ -1,4 +1,4 @@
-// renderer.js – полная версия с исправлениями
+// renderer.js – полная версия без опечаток
 let data = { folders: [], collections: [] };
 let activeCollectionId = null;
 let activeCollection = null;
@@ -54,16 +54,342 @@ let currentStepForSend = null;
 let fullHistory = [];
 let sidebarWidth = 260;
 
-// ================== УТИЛИТЫ ==================
+// ================== CodeMirror 5 ==================
+const activeEditors = new Map();
 
-// Безопасное экранирование HTML
+function createCodeMirrorEditor(textarea, initialValue = '') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'cm-wrapper';
+
+    if (typeof CodeMirror === 'undefined') {
+        console.warn('CodeMirror не загружен');
+        textarea.style.display = '';
+        wrapper.appendChild(textarea);
+        return { wrapper, editor: null };
+    }
+
+    const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
+    const isDark = currentTheme === 'dark' || currentTheme === 'red-black';
+
+    const editor = CodeMirror(wrapper, {
+        value: initialValue,
+        mode: { name: 'javascript', json: true, statementIndent: 2 },
+        theme: 'default',
+        lineNumbers: true,
+        lineWrapping: true,
+        autoCloseBrackets: true,
+        matchBrackets: true,
+        styleActiveLine: true,
+        tabSize: 2,
+        indentUnit: 2,
+        indentWithTabs: false,
+        foldGutter: true,
+        gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+        extraKeys: {
+            'Ctrl-/': 'toggleComment',
+            'Cmd-/': 'toggleComment',
+            'Ctrl-F': 'findPersistent',
+            'Cmd-F': 'findPersistent',
+        },
+    });
+
+    editor.on('change', () => {
+        textarea.value = editor.getValue();
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    editor.setSize('100%', '180px');
+    textarea.style.display = 'none';
+    wrapper.appendChild(textarea);
+    wrapper.classList.add('theme-' + currentTheme);
+
+    return { wrapper, editor };
+}
+
+function destroyAllEditors() {
+    activeEditors.forEach(({ editor }) => {
+        if (editor && typeof editor.toTextArea === 'function') {
+            const wrapper = editor.getWrapperElement();
+            if (wrapper && wrapper.parentNode) {
+                wrapper.parentNode.removeChild(wrapper);
+            }
+        }
+    });
+    activeEditors.clear();
+}
+
+function updateEditorsTheme() {
+    const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
+    const isDark = currentTheme === 'dark' || currentTheme === 'red-black';
+
+    activeEditors.forEach(({ editor, wrapper }) => {
+        if (!editor) return;
+        editor.setOption('theme', 'default');
+        wrapper.classList.remove('theme-dark', 'theme-light', 'theme-red-white', 'theme-red-black');
+        wrapper.classList.add('theme-' + currentTheme);
+        editor.refresh();
+    });
+}
+
+function formatJSON(text) {
+    if (!text || !text.trim()) return '';
+
+    let result = '';
+    let indent = 0;
+    const indentStr = '  ';
+
+    let inString = false;
+    let stringChar = '';
+    let inLineComment = false;
+    let inBlockComment = false;
+    let inWord = false;
+
+    const addNewline = () => {
+        result += '\n' + indentStr.repeat(indent);
+        inWord = false;
+    };
+
+    const addChar = (c) => { result += c; };
+
+    const isWordChar = (c) => /[a-zA-Z0-9_]/.test(c);
+
+    const endsWithWhitespace = () => {
+        return !result || result.endsWith(' ') || result.endsWith('\t') || result.endsWith('\n') || result.endsWith('\r');
+    };
+
+    const trimTrailingWhitespace = () => {
+        result = result.replace(/[ \t]*\n([ \t]*\n)*/g, '\n').replace(/[ \t]+$/, '');
+    };
+
+    let i = 0;
+    while (i < text.length) {
+        const c = text[i];
+        const next = text[i + 1];
+
+        if (inLineComment) {
+            addChar(c);
+            if (c === '\n') {
+                inLineComment = false;
+                result += indentStr.repeat(indent);
+            }
+            i++;
+            continue;
+        }
+
+        if (inBlockComment) {
+            addChar(c);
+            if (c === '*' && next === '/') {
+                addChar('/');
+                inBlockComment = false;
+                i += 2;
+            } else {
+                i++;
+            }
+            continue;
+        }
+
+        if (inString) {
+            addChar(c);
+            if (c === '\\' && i + 1 < text.length) {
+                addChar(text[i + 1]);
+                i += 2;
+                continue;
+            }
+            if (c === stringChar) {
+                inString = false;
+                inWord = false;
+            }
+            i++;
+            continue;
+        }
+
+        if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+            if (inWord) inWord = false;
+            i++;
+            continue;
+        }
+
+        if (c === '"' || c === "'") {
+            if (!endsWithWhitespace() && !inWord && result && !result.endsWith(':') && !result.endsWith('{') && !result.endsWith('[') && !result.endsWith(',')) {
+                result += ' ';
+            }
+            addChar(c);
+            inString = true;
+            stringChar = c;
+            inWord = false;
+            i++;
+            continue;
+        }
+
+        if (c === '/' && next === '/') {
+            if (result && !result.endsWith('\n') && !result.endsWith(' ') && !result.endsWith('\t')) {
+                result += ' ';
+            }
+            addChar('/');
+            addChar('/');
+            inLineComment = true;
+            inWord = false;
+            i += 2;
+            continue;
+        }
+
+        if (c === '/' && next === '*') {
+            if (result && !result.endsWith('\n') && !result.endsWith(' ') && !result.endsWith('\t')) {
+                result += ' ';
+            }
+            addChar('/');
+            addChar('*');
+            inBlockComment = true;
+            inWord = false;
+            i += 2;
+            continue;
+        }
+
+        if (c === '{' || c === '[') {
+            if (inWord) { result += ' '; inWord = false; }
+            addChar(c);
+            indent++;
+
+            let j = i + 1;
+            let hasContent = false;
+            while (j < text.length) {
+                const ch = text[j];
+                if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t') { j++; continue; }
+                if ((ch === '}' && c === '{') || (ch === ']' && c === '[')) break;
+                if (ch === '/' && text[j + 1] === '/') {
+                    j += 2;
+                    while (j < text.length && text[j] !== '\n') j++;
+                    continue;
+                }
+                if (ch === '/' && text[j + 1] === '*') {
+                    j += 2;
+                    while (j < text.length - 1 && !(text[j] === '*' && text[j + 1] === '/')) j++;
+                    j += 2;
+                    continue;
+                }
+                hasContent = true;
+                break;
+            }
+
+            if (hasContent) addNewline();
+            inWord = false;
+            i++;
+            continue;
+        }
+
+        if (c === '}' || c === ']') {
+            indent--;
+            if (inWord) inWord = false;
+
+            const trimmed = result.trimEnd();
+            const lastChar = trimmed[trimmed.length - 1];
+
+            if (lastChar !== '{' && lastChar !== '[') {
+                trimTrailingWhitespace();
+                addNewline();
+            } else {
+                trimTrailingWhitespace();
+            }
+            addChar(c);
+            inWord = false;
+            i++;
+            continue;
+        }
+
+        if (c === ',') {
+            if (inWord) inWord = false;
+            addChar(c);
+
+            let j = i + 1;
+            while (j < text.length) {
+                const ch = text[j];
+                if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t') { j++; continue; }
+                if (ch === '/' && text[j + 1] === '/') {
+                    j += 2;
+                    while (j < text.length && text[j] !== '\n') j++;
+                    continue;
+                }
+                if (ch === '/' && text[j + 1] === '*') {
+                    j += 2;
+                    while (j < text.length - 1 && !(text[j] === '*' && text[j + 1] === '/')) j++;
+                    j += 2;
+                    continue;
+                }
+                break;
+            }
+            const nextChar = text[j];
+            if (nextChar !== '}' && nextChar !== ']') {
+                addNewline();
+            }
+            inWord = false;
+            i++;
+            continue;
+        }
+
+        if (c === ':') {
+            if (inWord) inWord = false;
+            while (result.endsWith(' ') || result.endsWith('\t')) {
+                result = result.slice(0, -1);
+            }
+            addChar(c);
+            result += ' ';
+            inWord = false;
+            i++;
+            continue;
+        }
+
+        if (isWordChar(c)) {
+            if (!inWord && !endsWithWhitespace() && result && !result.endsWith(':') && !result.endsWith('{') && !result.endsWith('[') && !result.endsWith(',')) {
+                result += ' ';
+            }
+            addChar(c);
+            inWord = true;
+            i++;
+            continue;
+        }
+
+        if (inWord) inWord = false;
+        if (!endsWithWhitespace() && result && !result.endsWith(':') && !result.endsWith('{') && !result.endsWith('[') && !result.endsWith(',')) {
+            result += ' ';
+        }
+        addChar(c);
+        i++;
+    }
+
+    return result.trim();
+}
+
+function formatCurrentEditor(editorId) {
+    const editorInfo = activeEditors.get(editorId);
+    if (!editorInfo || !editorInfo.editor) {
+        toast('Редактор не найден', 'error');
+        return;
+    }
+
+    const editor = editorInfo.editor;
+    const text = editor.getValue();
+
+    if (!text.trim()) {
+        toast('Нечего форматировать', 'warning');
+        return;
+    }
+
+    try {
+        const formatted = formatJSON(text);
+        editor.setValue(formatted);
+        toast('JSON отформатирован', 'success');
+    } catch (e) {
+        toast('Ошибка форматирования: ' + e.message, 'error');
+    }
+}
+
+// ================== УТИЛИТЫ ==================
 function escapeHtml(t) {
     if (typeof t !== 'string') return t == null ? '' : String(t);
     return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
-// Создание текстового элемента (безопаснее innerHTML)
 function txt(tag, text, className) {
     const el = document.createElement(tag);
     if (className) el.className = className;
@@ -71,7 +397,6 @@ function txt(tag, text, className) {
     return el;
 }
 
-// Debounce для автосохранения
 function debounce(fn, delay) {
     let timer;
     return (...args) => {
@@ -80,7 +405,6 @@ function debounce(fn, delay) {
     };
 }
 
-// Toast-уведомления
 function toast(message, type = 'info', duration = 3000) {
     let container = document.querySelector('.toast-container');
     if (!container) {
@@ -99,7 +423,6 @@ function toast(message, type = 'info', duration = 3000) {
     }, duration);
 }
 
-// Кастомный confirm вместо browser confirm
 function confirmDialog(title, message) {
     return new Promise(resolve => {
         const dialog = document.createElement('div');
@@ -132,7 +455,6 @@ function confirmDialog(title, message) {
     });
 }
 
-// Debounced save
 const debouncedSave = debounce(async () => {
     try {
         await saveData();
@@ -141,7 +463,7 @@ const debouncedSave = debounce(async () => {
     }
 }, 500);
 
-// ================== Sidebar resize & toggle ==================
+// ================== Sidebar ==================
 let isResizing = false, startX, startWidth;
 resizer.addEventListener('mousedown', e => {
     if (sidebar.style.display === 'none') return;
@@ -163,12 +485,14 @@ toggleSidebarBtn.addEventListener('click', () => {
         resizer.classList.remove('hidden');
         sidebar.style.width = sidebarWidth + 'px';
         sidebarToggleBtn.style.display = 'none';
-        toggleSidebarBtn.textContent = '☰ Скрыть панель';
+        toggleSidebarBtn.textContent = 'Скрыть панель';
+        toggleSidebarBtn.classList.remove('show');
     } else {
         sidebar.style.display = 'none';
         resizer.classList.add('hidden');
         sidebarToggleBtn.style.display = 'block';
-        toggleSidebarBtn.textContent = '☰ Показать панель';
+        toggleSidebarBtn.textContent = 'Показать панель';
+        toggleSidebarBtn.classList.add('show');
     }
 });
 sidebarToggleBtn.addEventListener('click', () => {
@@ -179,7 +503,7 @@ sidebarToggleBtn.addEventListener('click', () => {
     toggleSidebarBtn.textContent = '☰ Скрыть панель';
 });
 
-// ================== Закрытие модальных окон ==================
+// ================== Закрытие модалок ==================
 function setupModalOverlayClose() {
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', function (e) {
@@ -195,7 +519,7 @@ document.addEventListener('DOMContentLoaded', setupModalOverlayClose);
 closeDetailModalBtn.addEventListener('click', () => detailModal.classList.remove('active'));
 closeSendModalBtn.addEventListener('click', () => { sendRequestModal.classList.remove('active'); currentStepForSend = null; });
 
-// ================== Триграммный поиск ==================
+// ================== Поиск ==================
 function getTrigrams(s) {
     const str = '  ' + s.toLowerCase() + ' ';
     const t = [];
@@ -256,51 +580,53 @@ function showInputModal(title, def) {
         inputModalField.addEventListener('keydown', onKey);
     });
 }
-function showSelectModal(title, options) {
-    return new Promise(resolve => {
-        inputModalTitle.textContent = title;
-        inputModalField.style.display = 'none';
-        const oldSel = inputModal.querySelector('.temp-select');
-        if (oldSel) oldSel.remove();
-        const sel = document.createElement('select');
-        sel.className = 'temp-select';
-        sel.style.cssText = 'width:100%;padding:8px 12px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;margin-bottom:16px;';
-        options.forEach((o, i) => {
-            const opt = document.createElement('option');
-            opt.value = i; opt.textContent = o; sel.appendChild(opt);
-        });
-        inputModalField.parentNode.insertBefore(sel, inputModalField.nextSibling);
-        inputModal.classList.add('active');
-        sel.focus();
-        const cleanup = () => {
-            inputModal.classList.remove('active');
-            sel.remove();
-            inputModalField.style.display = 'block';
-            inputModalOkBtn.removeEventListener('click', onOk);
-            inputModalCancelBtn.removeEventListener('click', onCancel);
-        };
-        const onOk = () => { const v = parseInt(sel.value, 10); cleanup(); resolve(v); };
-        const onCancel = () => { cleanup(); resolve(null); };
-        inputModalOkBtn.addEventListener('click', onOk);
-        inputModalCancelBtn.addEventListener('click', onCancel);
-    });
-}
 
 // ================== Темы ==================
 const themes = ['dark', 'light', 'red-white', 'red-black'];
-const themeNames = { dark: 'Тёмная', light: 'Светлая', 'red-white': 'Красно-белая', 'red-black': 'Красно-чёрная' };
+const themeNames = {
+    dark: 'Тёмная',
+    light: 'Светлая',
+    'red-white': 'Красно-белая',
+    'red-black': 'Красно-чёрная'
+};
+const themeIcons = {
+    dark: '🌙',
+    light: '☀️',
+    'red-white': '🌹',
+    'red-black': '🔥'
+};
+
+const themeToggle = document.getElementById('themeToggle');
+const themeIconBtn = document.getElementById('themeToggleBtn');
+const themeColorIndicator = document.getElementById('themeColorIndicator');
+
 function applyTheme(t) {
     document.body.classList.remove('light-theme', 'red-white-theme', 'red-black-theme');
     if (t !== 'dark') document.body.classList.add(`${t}-theme`);
-    themeNameEl.textContent = themeNames[t];
-    localStorage.setItem('ab-runner-theme', t);
-}
-applyTheme(localStorage.getItem('ab-runner-theme') || 'dark');
-themeToggleBtn.addEventListener('click', () => {
-    const cur = localStorage.getItem('ab-runner-theme') || 'dark';
-    applyTheme(themes[(themes.indexOf(cur) + 1) % themes.length]);
-});
 
+    // Обновляем UI
+    themeNameEl.textContent = themeNames[t];
+    themeIconBtn.textContent = themeIcons[t];
+    themeToggle.dataset.tooltip = `Тема: ${themeNames[t]}. Кликните для смены`;
+
+    localStorage.setItem('ab-runner-theme', t);
+    updateEditorsTheme();
+
+    // Анимация вращения при смене
+    themeIconBtn.classList.remove('spinning');
+    void themeIconBtn.offsetWidth; // перезапуск анимации
+    themeIconBtn.classList.add('spinning');
+    setTimeout(() => themeIconBtn.classList.remove('spinning'), 500);
+}
+
+applyTheme(localStorage.getItem('ab-runner-theme') || 'dark');
+
+// Клик по всему блоку или по кнопке
+themeToggle.addEventListener('click', (e) => {
+    const cur = localStorage.getItem('ab-runner-theme') || 'dark';
+    const nextIndex = (themes.indexOf(cur) + 1) % themes.length;
+    applyTheme(themes[nextIndex]);
+});
 // ================== Данные ==================
 async function loadData() {
     data = await window.api.getData();
@@ -320,23 +646,20 @@ async function saveData() { await window.api.saveData(data); }
 
 // ================== Иконка коллекции ==================
 function getCollectionIcon(col) {
-    if (!col.steps || col.steps.length === 0) return '📄';
-    const methods = [...new Set(col.steps.map(s => s.method).filter(Boolean))];
-    if (methods.length === 0) return '📄';
-    if (methods.length === 1) {
-        switch (methods[0]) {
-            case 'GET': return '📥';
-            case 'POST': return '📤';
-            case 'PUT': return '📝';
-            case 'PATCH': return '🔧';
-            case 'DELETE': return '🗑️';
-            default: return '📄';
-        }
-    }
-    return '📂';
+    if (!col.steps || col.steps.length === 0) return '';
+    return '📄';
 }
-
-// ================== Генерация уникальных ID ==================
+function getCollectionMethodBadge(col) {
+    if (!col.steps || col.steps.length === 0) return null;
+    const methods = [...new Set(col.steps.map(s => s.method).filter(Boolean))];
+    if (methods.length === 1) {
+        return methods[0]; // один метод — показываем его
+    }
+    if (methods.length > 1) {
+        return 'MIX'; // несколько разных — показываем MIX
+    }
+    return null;
+}
 function generateUniqueId() {
     let id = Date.now().toString();
     while (data.collections.some(c => c.id === id) || data.folders.some(f => f.id === id)) {
@@ -382,14 +705,12 @@ function renderFolderChildren(folderId, container, level) {
         container.appendChild(childContainer);
         renderFolderContents(folder.id, childContainer, level + 1);
 
-        // Клик по папке — сворачивание/разворачивание
         folderDiv.addEventListener('click', e => {
             if (e.target.classList.contains('delete-folder-btn') || e.target.classList.contains('folder-add-collection-btn')) return;
             folder.collapsed = !folder.collapsed;
             saveData().then(() => renderTree());
         });
 
-        // Drag-start папки
         folderDiv.addEventListener('dragstart', e => {
             e.dataTransfer.setData('text/plain', 'folder:' + folder.id);
             e.dataTransfer.effectAllowed = 'move';
@@ -397,35 +718,29 @@ function renderFolderChildren(folderId, container, level) {
         });
         folderDiv.addEventListener('dragend', e => folderDiv.classList.remove('dragging'));
 
-        // ===== DROP-зона: заголовок папки =====
         folderDiv.addEventListener('dragover', e => {
             e.preventDefault();
             e.stopPropagation();
-            const transferData = e.dataTransfer.getData('text/plain');
-            if (!transferData) return;
-            if (transferData === 'folder:' + folder.id) return;
+            if (!e.dataTransfer.types.includes('text/plain')) return;
             folderDiv.classList.add('drag-over');
             e.dataTransfer.dropEffect = 'move';
         });
         folderDiv.addEventListener('dragleave', e => {
-            if (!folderDiv.contains(e.relatedTarget)) {
-                folderDiv.classList.remove('drag-over');
-            }
+            if (!folderDiv.contains(e.relatedTarget)) folderDiv.classList.remove('drag-over');
         });
         folderDiv.addEventListener('drop', e => {
             e.preventDefault();
             e.stopPropagation();
             folderDiv.classList.remove('drag-over');
-            handleDropOnFolder(e.dataTransfer.getData('text/plain'), folder.id);
+            const transferData = e.dataTransfer.getData('text/plain');
+            if (transferData === 'folder:' + folder.id) return;
+            handleDropOnFolder(transferData, folder.id);
         });
 
-        // ===== DROP-зона: содержимое папки =====
         childContainer.addEventListener('dragover', e => {
             e.preventDefault();
             e.stopPropagation();
-            const transferData = e.dataTransfer.getData('text/plain');
-            if (!transferData) return;
-            if (transferData === 'folder:' + folder.id) return;
+            if (!e.dataTransfer.types.includes('text/plain')) return;
             childContainer.classList.add('drag-over');
             folderDiv.classList.add('drag-over');
             e.dataTransfer.dropEffect = 'move';
@@ -441,10 +756,11 @@ function renderFolderChildren(folderId, container, level) {
             e.stopPropagation();
             childContainer.classList.remove('drag-over');
             folderDiv.classList.remove('drag-over');
-            handleDropOnFolder(e.dataTransfer.getData('text/plain'), folder.id);
+            const transferData = e.dataTransfer.getData('text/plain');
+            if (transferData === 'folder:' + folder.id) return;
+            handleDropOnFolder(transferData, folder.id);
         });
 
-        // Удаление папки
         delBtn.addEventListener('click', async e => {
             e.stopPropagation();
             const hasChildren = collections.some(c => c.folderId === folder.id) || folders.some(f => f.parentId === folder.id);
@@ -456,15 +772,9 @@ function renderFolderChildren(folderId, container, level) {
             }
         });
 
-        // Создание коллекции в папке
         addColBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const newCol = {
-                id: generateUniqueId(),
-                name: 'Новая коллекция',
-                steps: [],
-                folderId: folder.id,
-            };
+            const newCol = { id: generateUniqueId(), name: 'Новая коллекция', steps: [], folderId: folder.id };
             data.collections.push(newCol);
             await saveData();
             selectCollection(newCol.id);
@@ -476,12 +786,10 @@ function renderFolderChildren(folderId, container, level) {
     folderCollections.forEach(col => renderCollectionItem(col, container, level + 1));
 }
 
-// Общая функция обработки drop на папку
 function handleDropOnFolder(transferData, targetFolderId) {
     if (!transferData) return;
     if (transferData.startsWith('col:')) {
-        const colId = transferData.substring(4);
-        moveCollectionToFolder(colId, targetFolderId);
+        moveCollectionToFolder(transferData.substring(4), targetFolderId);
     } else if (transferData.startsWith('folder:')) {
         const folderIdToMove = transferData.substring(7);
         if (folderIdToMove !== targetFolderId && !isDescendant(targetFolderId, folderIdToMove)) {
@@ -490,7 +798,6 @@ function handleDropOnFolder(transferData, targetFolderId) {
     }
 }
 
-// Проверка: является ли folderId потомком ancestorId
 function isDescendant(folderId, ancestorId) {
     const folder = data.folders.find(f => f.id === folderId);
     if (!folder) return false;
@@ -503,33 +810,32 @@ function renderFolderContents(folderId, container, level) {
     renderFolderChildren(folderId, container, level);
 }
 
+let treeContainerListenersAdded = false;
 function renderTree() {
     treeContainer.innerHTML = '';
     renderFolderChildren(null, treeContainer, 0);
 
-    // Drop-зона для вытаскивания в корень
-    treeContainer.addEventListener('dragover', e => {
-        e.preventDefault();
-        treeContainer.classList.add('drag-over-root');
-        e.dataTransfer.dropEffect = 'move';
-    });
-    treeContainer.addEventListener('dragleave', e => {
-        if (!treeContainer.contains(e.relatedTarget)) {
-            treeContainer.classList.remove('drag-over-root');
-        }
-    });
-    treeContainer.addEventListener('drop', e => {
-        if (e.target === treeContainer) {
+    if (!treeContainerListenersAdded) {
+        treeContainerListenersAdded = true;
+
+        treeContainer.addEventListener('dragover', e => {
             e.preventDefault();
-            treeContainer.classList.remove('drag-over-root');
-            const transferData = e.dataTransfer.getData('text/plain');
-            if (transferData.startsWith('col:')) {
-                moveCollectionToFolder(transferData.substring(4), null);
-            } else if (transferData.startsWith('folder:')) {
-                moveFolderToFolder(transferData.substring(7), null);
+            treeContainer.classList.add('drag-over-root');
+            e.dataTransfer.dropEffect = 'move';
+        });
+        treeContainer.addEventListener('dragleave', e => {
+            if (!treeContainer.contains(e.relatedTarget)) treeContainer.classList.remove('drag-over-root');
+        });
+        treeContainer.addEventListener('drop', e => {
+            if (e.target === treeContainer) {
+                e.preventDefault();
+                treeContainer.classList.remove('drag-over-root');
+                const transferData = e.dataTransfer.getData('text/plain');
+                if (transferData.startsWith('col:')) moveCollectionToFolder(transferData.substring(4), null);
+                else if (transferData.startsWith('folder:')) moveFolderToFolder(transferData.substring(7), null);
             }
-        }
-    });
+        });
+    }
 }
 
 function renderCollectionItem(col, container, indentLevel = 0) {
@@ -542,7 +848,22 @@ function renderCollectionItem(col, container, indentLevel = 0) {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'collection-name';
     nameSpan.title = 'Двойной клик для переименования';
-    nameSpan.textContent = getCollectionIcon(col) + ' ' + (col.name || 'Без названия');
+
+    // Бейдж метода слева (как в Postman)
+    const methodBadge = getCollectionMethodBadge(col);
+    if (methodBadge) {
+        const badge = document.createElement('span');
+        badge.className = 'method-badge';
+        badge.dataset.method = methodBadge === 'MIX' ? '' : methodBadge;
+        badge.textContent = methodBadge;
+        nameSpan.appendChild(badge);
+        nameSpan.appendChild(document.createTextNode(' '));
+    }
+
+    // Иконка + название
+    const icon = getCollectionIcon(col);
+    if (icon) nameSpan.appendChild(document.createTextNode(icon + ' '));
+    nameSpan.appendChild(document.createTextNode(col.name || 'Без названия'));
 
     const delBtn = document.createElement('button');
     delBtn.className = 'delete-collection-btn';
@@ -616,9 +937,7 @@ function cleanupEmptyCollection(colId) {
 // ================== Выбор коллекции ==================
 function selectCollection(id) {
     const previousId = activeCollectionId;
-    if (previousId && previousId !== id) {
-        cleanupEmptyCollection(previousId);
-    }
+    if (previousId && previousId !== id) cleanupEmptyCollection(previousId);
 
     activeCollectionId = id;
     activeCollection = data.collections.find(c => c.id === id);
@@ -645,11 +964,17 @@ function renderCollectionEditor() {
 }
 
 function renderSteps() {
+    destroyAllEditors();
     stepsContainer.innerHTML = '';
     if (!activeCollection.steps) activeCollection.steps = [];
     activeCollection.steps.forEach((step, idx) => {
         const card = createStepCard(step, idx);
         stepsContainer.appendChild(card);
+    });
+    requestAnimationFrame(() => {
+        activeEditors.forEach(({ editor }) => {
+            if (editor && typeof editor.refresh === 'function') editor.refresh();
+        });
     });
 }
 
@@ -657,6 +982,8 @@ function createStepCard(step, idx) {
     const card = document.createElement('div');
     card.className = 'step-card';
     card.dataset.index = idx;
+
+    // ===== Заголовок шага =====
     const header = document.createElement('div');
     header.className = 'step-header';
 
@@ -668,6 +995,12 @@ function createStepCard(step, idx) {
     sendBtn.className = 'send-btn';
     sendBtn.textContent = '▶ Send';
     sendBtn.addEventListener('click', () => openSendModal(step));
+
+    const curlBtn = document.createElement('button');
+    curlBtn.className = 'curl-import-btn';
+    curlBtn.textContent = '📋 cURL';
+    curlBtn.title = 'Импортировать из cURL';
+    curlBtn.addEventListener('click', () => importStepFromCurl(step, idx));
 
     const delBtn = document.createElement('button');
     delBtn.className = 'danger';
@@ -682,98 +1015,360 @@ function createStepCard(step, idx) {
     });
 
     actionsDiv.appendChild(sendBtn);
+    actionsDiv.appendChild(curlBtn);
     actionsDiv.appendChild(delBtn);
     header.appendChild(nameSpan);
     header.appendChild(actionsDiv);
     card.appendChild(header);
 
-    const createField = (labelText, tag, className, value, placeholder) => {
-        const field = document.createElement('div');
-        field.className = 'field';
-        const label = txt('label', labelText);
-        let input;
-        if (tag === 'textarea') {
-            input = document.createElement('textarea');
-            input.rows = 4;
-            input.value = value || '';
-        } else if (tag === 'select') {
-            input = document.createElement('select');
-            ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => {
-                const opt = document.createElement('option');
-                opt.value = m; opt.textContent = m;
-                if (m === value) opt.selected = true;
-                input.appendChild(opt);
-            });
-        } else {
-            input = document.createElement('input');
-            input.type = tag;
-            input.value = value || '';
-            if (placeholder) input.placeholder = placeholder;
-        }
-        input.className = className;
-        field.appendChild(label);
-        field.appendChild(input);
-        return { field, input };
-    };
+    // ===== Название шага =====
+    const nameField = document.createElement('div');
+    nameField.className = 'field';
+    const nameLabel = txt('label', 'Название шага');
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'step-name-input';
+    nameInput.value = step.name || '';
+    nameInput.placeholder = 'Например: Логин';
+    nameField.appendChild(nameLabel);
+    nameField.appendChild(nameInput);
+    card.appendChild(nameField);
 
-    const nameField = createField('Название шага', 'text', 'step-name-input', step.name, 'Например: Логин');
-    const urlField = createField('URL', 'text', 'step-url', step.url, 'http://api.example.com/{id}');
+    // ===== Method + URL (в одной строке, одинаковая высота) =====
+    const urlMethodRow = document.createElement('div');
+    urlMethodRow.className = 'url-method-row';
 
-    const methodRow = document.createElement('div');
-    methodRow.style.cssText = 'display:flex; gap:10px;';
+    // Метод (слева) — с label сверху, как у URL
     const methodField = document.createElement('div');
     methodField.className = 'field';
-    methodField.style.flex = '1';
     const methodLabel = txt('label', 'Метод');
-    const methodSelect = document.createElement('select');
-    methodSelect.className = 'step-method';
+    // Кастомный dropdown для метода
+    const methodDropdown = document.createElement('div');
+    methodDropdown.className = 'method-dropdown';
+    methodDropdown.dataset.method = step.method || 'GET';
+
+    const methodSelected = document.createElement('div');
+    methodSelected.className = 'method-selected';
+    methodSelected.textContent = step.method || 'GET';
+
+    const methodOptions = document.createElement('div');
+    methodOptions.className = 'method-options';
+
     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m; opt.textContent = m;
-        if (m === step.method) opt.selected = true;
-        methodSelect.appendChild(opt);
+        const option = document.createElement('div');
+        option.className = 'method-option';
+        option.dataset.method = m;
+        option.textContent = m;
+        if (m === step.method) option.classList.add('selected');
+
+        option.addEventListener('click', () => {
+            methodSelected.textContent = m;
+            methodDropdown.dataset.method = m;
+            methodOptions.querySelectorAll('.method-option').forEach(opt => opt.classList.remove('selected'));
+            option.classList.add('selected');
+            methodDropdown.classList.remove('open');
+
+            // Триггерим сохранение
+            const event = new Event('input', { bubbles: true });
+            methodDropdown.dispatchEvent(event);
+        });
+
+        methodOptions.appendChild(option);
+    });
+
+    methodSelected.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Закрываем все другие открытые dropdown
+        document.querySelectorAll('.method-dropdown.open').forEach(d => {
+            if (d !== methodDropdown) d.classList.remove('open');
+        });
+        methodDropdown.classList.toggle('open');
+    });
+
+    methodDropdown.appendChild(methodSelected);
+    methodDropdown.appendChild(methodOptions);
+
+    // Геттер для получения значения
+    Object.defineProperty(methodDropdown, 'value', {
+        get: function () { return this.dataset.method; }
     });
     methodField.appendChild(methodLabel);
-    methodField.appendChild(methodSelect);
+    methodField.appendChild(methodDropdown);
 
-    const ctField = createField('Content-Type', 'text', 'step-content-type', step.contentType || 'application/vnd.api+json');
-    methodRow.appendChild(methodField);
-    methodRow.appendChild(ctField.field);
+    // URL (справа) — с label сверху
+    const urlField = document.createElement('div');
+    urlField.className = 'field';
+    const urlLabel = txt('label', 'URL');
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'step-url';
+    urlInput.value = step.url || '';
+    urlInput.placeholder = 'http://api.example.com/{id}';
+    urlField.appendChild(urlLabel);
+    urlField.appendChild(urlInput);
 
-    const authField = createField('Authorization', 'text', 'step-auth', step.auth, 'Bearer токен');
-    const bodyField = createField('Тело запроса', 'textarea', 'step-body', step.body);
+    urlMethodRow.appendChild(methodField);
+    urlMethodRow.appendChild(urlField);
+    card.appendChild(urlMethodRow);
 
-    const customHeadersStr = step.customHeaders ? Object.entries(step.customHeaders).map(([k, v]) => `${k}:${v}`).join(', ') : '';
-    const headersField = createField('Доп. заголовки (через запятую key:value)', 'text', 'step-headers', customHeadersStr, 'X-API-Key: abc123, Accept: application/json');
+    // ===== Табы =====
+    const tabsContainer = document.createElement('div');
+    tabsContainer.className = 'step-tabs';
 
-    card.appendChild(nameField.field);
-    card.appendChild(urlField.field);
-    card.appendChild(methodRow);
-    card.appendChild(authField.field);
-    card.appendChild(bodyField.field);
-    card.appendChild(headersField.field);
+    const tabButtons = {};
+    const tabContents = {};
 
+    const createTab = (id, label) => {
+        const btn = document.createElement('button');
+        btn.className = 'step-tab-btn';
+        btn.textContent = label;
+        btn.dataset.tab = id;
+
+        const content = document.createElement('div');
+        content.className = 'step-tab-content';
+        content.dataset.tab = id;
+
+        tabButtons[id] = btn;
+        tabContents[id] = content;
+
+        tabsContainer.appendChild(btn);
+
+        return { btn, content };
+    };
+
+    const headersTab = createTab('headers', 'Headers');
+    const authTab = createTab('auth', 'Authorization');
+    const bodyTab = createTab('body', 'Body');
+
+    card.appendChild(tabsContainer);
+
+    // Переключение табов + refresh для CodeMirror
+    Object.keys(tabButtons).forEach(tabId => {
+        tabButtons[tabId].addEventListener('click', () => {
+            Object.values(tabButtons).forEach(b => b.classList.remove('active'));
+            Object.values(tabContents).forEach(c => c.classList.remove('active'));
+            tabButtons[tabId].classList.add('active');
+            tabContents[tabId].classList.add('active');
+
+            // ВАЖНО: обновляем CodeMirror когда показываем Body таб
+            if (tabId === 'body') {
+                requestAnimationFrame(() => {
+                    activeEditors.forEach(({ editor }) => {
+                        if (editor) editor.refresh();
+                    });
+                });
+            }
+        });
+    });
+
+    tabButtons.headers.classList.add('active');
+    tabContents.headers.classList.add('active');
+
+    // ===== Headers Tab (как в Postman) =====
+    // Миграция: если customHeaders это объект — конвертируем в массив
+    let headersArray = step.customHeaders;
+    if (!Array.isArray(headersArray)) {
+        if (headersArray && typeof headersArray === 'object') {
+            headersArray = Object.entries(headersArray).map(([key, value]) => ({
+                key, value: String(value), enabled: true
+            }));
+        } else {
+            headersArray = [];
+        }
+        step.customHeaders = headersArray;
+    }
+
+    const headersTable = document.createElement('table');
+    headersTable.className = 'headers-table';
+
+    const thead = document.createElement('thead');
+    thead.innerHTML = `
+        <tr>
+            <th class="header-enabled"></th>
+            <th class="header-key">Ключ</th>
+            <th class="header-value">Значение</th>
+            <th class="header-actions"></th>
+        </tr>
+    `;
+    headersTable.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    headersTable.appendChild(tbody);
+
+    // Популярные заголовки для datalist
+    const commonHeaders = [
+        'Content-Type', 'Accept', 'Authorization', 'X-API-Key',
+        'User-Agent', 'Cache-Control', 'X-Request-ID', 'X-Correlation-ID',
+        'If-None-Match', 'If-Modified-Since', 'Accept-Language',
+        'Accept-Encoding', 'Connection', 'Origin', 'Referer',
+        'X-Forwarded-For', 'X-Real-IP', 'Cookie', 'Set-Cookie'
+    ];
+
+    // Уникальный ID для datalist
+    const datalistId = 'headers-list-' + idx + '-' + Date.now();
+    const datalist = document.createElement('datalist');
+    datalist.id = datalistId;
+    commonHeaders.forEach(h => {
+        const opt = document.createElement('option');
+        opt.value = h;
+        datalist.appendChild(opt);
+    });
+    tabContents.headers.appendChild(datalist);
+
+    const renderHeaderRow = (headerData, index) => {
+        const tr = document.createElement('tr');
+        tr.className = 'header-row' + (headerData.enabled ? '' : ' disabled');
+
+        // Чекбокс enabled
+        const tdEnabled = document.createElement('td');
+        tdEnabled.className = 'header-enabled';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = headerData.enabled !== false;
+        checkbox.title = headerData.enabled !== false ? 'Отключить заголовок' : 'Включить заголовок';
+        checkbox.addEventListener('change', () => {
+            headerData.enabled = checkbox.checked;
+            tr.classList.toggle('disabled', !checkbox.checked);
+            debouncedSave();
+        });
+        tdEnabled.appendChild(checkbox);
+        tr.appendChild(tdEnabled);
+
+        // Ключ (с автодополнением)
+        const tdKey = document.createElement('td');
+        tdKey.className = 'header-key';
+        const keyInput = document.createElement('input');
+        keyInput.type = 'text';
+        keyInput.setAttribute('list', datalistId);
+        keyInput.value = headerData.key || '';
+        keyInput.placeholder = 'Название';
+        keyInput.autocomplete = 'off';
+        keyInput.addEventListener('input', () => {
+            headerData.key = keyInput.value.trim();
+            debouncedSave();
+        });
+        tdKey.appendChild(keyInput);
+        tr.appendChild(tdKey);
+
+        // Значение
+        const tdValue = document.createElement('td');
+        tdValue.className = 'header-value';
+        const valueInput = document.createElement('input');
+        valueInput.type = 'text';
+        valueInput.value = headerData.value || '';
+        valueInput.placeholder = 'Значение';
+        valueInput.addEventListener('input', () => {
+            headerData.value = valueInput.value;
+            debouncedSave();
+        });
+        tdValue.appendChild(valueInput);
+        tr.appendChild(tdValue);
+
+        // Удалить
+        const tdActions = document.createElement('td');
+        tdActions.className = 'header-actions';
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'header-remove-btn';
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Удалить заголовок';
+        removeBtn.addEventListener('click', () => {
+            step.customHeaders.splice(index, 1);
+            tr.style.opacity = '0';
+            tr.style.transform = 'translateX(10px)';
+            tr.style.transition = 'all 0.2s';
+            setTimeout(() => {
+                tr.remove();
+                debouncedSave();
+            }, 180);
+        });
+        tdActions.appendChild(removeBtn);
+        tr.appendChild(tdActions);
+
+        tbody.appendChild(tr);
+    };
+
+    // Рендерим существующие заголовки
+    step.customHeaders.forEach((h, i) => renderHeaderRow(h, i));
+
+    // Кнопка добавить
+    const addHeaderBtn = document.createElement('button');
+    addHeaderBtn.className = 'add-header-btn';
+    addHeaderBtn.textContent = 'Добавить заголовок';
+    addHeaderBtn.addEventListener('click', () => {
+        const newHeader = { key: '', value: '', enabled: true };
+        step.customHeaders.push(newHeader);
+        renderHeaderRow(newHeader, step.customHeaders.length - 1);
+        debouncedSave();
+    });
+
+    tabContents.headers.appendChild(headersTable);
+    tabContents.headers.appendChild(addHeaderBtn);
+
+    // ===== Auth Tab =====
+    const authField = document.createElement('div');
+    authField.className = 'field';
+    const authLabel = txt('label', 'Authorization');
+    const authInput = document.createElement('input');
+    authInput.type = 'text';
+    authInput.className = 'step-auth';
+    authInput.value = step.auth || '';
+    authInput.placeholder = 'Bearer токен';
+    authField.appendChild(authLabel);
+    authField.appendChild(authInput);
+    tabContents.auth.appendChild(authField);
+
+    // ===== Body Tab =====
+    const bodyFieldDiv = document.createElement('div');
+    bodyFieldDiv.className = 'field';
+
+    const bodyLabelRow = document.createElement('div');
+    bodyLabelRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;';
+    const bodyLabel = txt('label', 'Тело запроса (JSON, Ctrl+/ для комментариев)');
+    bodyLabel.style.marginBottom = '0';
+
+    const formatBtn = document.createElement('button');
+    formatBtn.className = 'secondary';
+    formatBtn.style.cssText = 'padding:2px 10px; font-size:12px;';
+    formatBtn.textContent = '🎨 Форматировать';
+
+    bodyLabelRow.appendChild(bodyLabel);
+    bodyLabelRow.appendChild(formatBtn);
+
+    const bodyTextarea = document.createElement('textarea');
+    bodyTextarea.className = 'step-body';
+    bodyTextarea.value = step.body || '';
+
+    const editorId = 'cm-' + idx + '-' + Date.now();
+    const { wrapper: cmWrapper, editor: cmInstance } = createCodeMirrorEditor(bodyTextarea, step.body || '');
+    activeEditors.set(editorId, { editor: cmInstance, wrapper: cmWrapper });
+
+    formatBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        formatCurrentEditor(editorId);
+    });
+
+    bodyFieldDiv.appendChild(bodyLabelRow);
+    bodyFieldDiv.appendChild(cmWrapper);
+    tabContents.body.appendChild(bodyFieldDiv);
+
+    card.appendChild(tabContents.headers);
+    card.appendChild(tabContents.auth);
+    card.appendChild(tabContents.body);
+
+    // ===== Сохранение =====
     const save = () => {
-        step.name = nameField.input.value.trim();
-        step.url = urlField.input.value.trim();
-        step.method = methodSelect.value;
-        step.contentType = ctField.input.value.trim();
-        step.auth = authField.input.value.trim();
-        step.body = bodyField.input.value;
-        const hStr = headersField.input.value.trim();
-        if (hStr) {
-            const obj = {};
-            hStr.split(',').forEach(p => {
-                const [k, ...r] = p.split(':');
-                if (k && r.length) obj[k.trim()] = r.join(':').trim();
-            });
-            step.customHeaders = obj;
-        } else step.customHeaders = {};
+        step.name = nameInput.value.trim();
+        step.url = urlInput.value.trim();
+        step.method = methodDropdown.value;  // ← новая ссылка
+        step.auth = authInput.value.trim();
+        step.body = bodyTextarea.value;
+        methodDropdown.dataset.method = step.method;
         nameSpan.textContent = step.name || `Шаг ${idx + 1}`;
         debouncedSave();
     };
-    [nameField.input, urlField.input, methodSelect, ctField.input, authField.input, bodyField.input, headersField.input]
+    [nameInput, urlInput, methodDropdown, authInput, bodyTextarea]
         .forEach(el => el.addEventListener('input', save));
+
     return card;
 }
 
@@ -819,10 +1414,12 @@ window.api.onProgress((progressData) => {
     row.appendChild(td2);
     row.appendChild(td3);
     runnerResultsBody.appendChild(row);
+
     if (activeCollection) {
         if (!activeCollection.results) activeCollection.results = [];
         activeCollection.results.push({ item, stepName, success, status, error, responseData: response ? JSON.stringify(response) : '' });
     }
+
     row.addEventListener('dblclick', () => showResponseDetails(row));
     progressEl.textContent = `Элемент: ${item} → ${stepName}`;
 });
@@ -970,17 +1567,17 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
             if (requestBody) html += `<div class="detail-section"><h3>Тело запроса</h3><div class="detail-field-value">${escapeHtml(requestBody)}<button class="copy-btn" data-copy="${escapeHtml(requestBody)}">📋 Копировать</button></div></div>`;
             if (resp.headers) html += `<div class="detail-section"><h3>Заголовки ответа</h3><div class="detail-field-value">${escapeHtml(JSON.stringify(resp.headers, null, 2))}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.headers, null, 2))}">📋 Копировать</button></div></div>`;
             html += `<div class="detail-section"><h3>Тело ответа</h3><div class="detail-field-value">${escapeHtml(JSON.stringify(resp.data, null, 2))}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.data, null, 2))}">📋 Копировать</button></div></div>`;
-        } catch (e) { 
-            html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${escapeHtml(responseData)}</div></div>`; 
+        } catch (e) {
+            html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${escapeHtml(responseData)}</div></div>`;
         }
-    } else { 
-        html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">Нет данных</div></div>`; 
+    } else {
+        html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">Нет данных</div></div>`;
     }
-    
+
     if (error) {
         html += `<div class="detail-section"><h3>Ошибка</h3>`;
         html += `<div class="detail-field-value" style="color:var(--danger);">${escapeHtml(error)}`;
-        
+
         try {
             if (responseData) {
                 const parsed = JSON.parse(responseData);
@@ -989,22 +1586,20 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
                     html += `<br><br><strong>Детали от сервера:</strong><br>`;
                     html += `<strong>Статус:</strong> ${escapeHtml(serverErr.status || '')}<br>`;
                     html += `<strong>Заголовок:</strong> ${escapeHtml(serverErr.title || '')}<br>`;
-                    if (serverErr.detail) {
-                        html += `<strong>Описание:</strong> ${escapeHtml(serverErr.detail)}<br>`;
-                    }
+                    if (serverErr.detail) html += `<strong>Описание:</strong> ${escapeHtml(serverErr.detail)}<br>`;
                 }
             }
         } catch (e) { /* не JSON */ }
-        
+
         html += `</div></div>`;
     }
-    
+
     detailContent.innerHTML = html;
     detailContent.querySelectorAll('[data-copy]').forEach(btn => {
         btn.addEventListener('click', () => {
             const txt2 = btn.getAttribute('data-copy');
             navigator.clipboard.writeText(txt2).then(() => {
-                const orig = btn.textContent; 
+                const orig = btn.textContent;
                 btn.textContent = '✓ Скопировано';
                 setTimeout(() => btn.textContent = orig, 2000);
             });
@@ -1020,7 +1615,7 @@ const generateJsonBtn = document.getElementById('generateJsonBtn');
 const saveJsonBtn = document.getElementById('saveJsonBtn');
 const closeModalBtn = document.getElementById('closeModalBtn');
 const jsonPreview = document.getElementById('jsonPreview');
-jsonGeneratorBtn.addEventListener('click', () => jsonModal.classList.add('active'));
+
 closeModalBtn.addEventListener('click', () => jsonModal.classList.remove('active'));
 let generatedJsonString = '';
 addFieldBtn.addEventListener('click', () => {
@@ -1075,9 +1670,8 @@ function parseCurl(cmd) {
     for (let i = 0; i < c.length; i++) {
         const ch = c[i];
         if (state === 0) {
-            if (ch === ' ') {
-                if (current) { tokens.push(current); current = ''; }
-            } else if (ch === "'") { state = 1; }
+            if (ch === ' ') { if (current) { tokens.push(current); current = ''; } }
+            else if (ch === "'") { state = 1; }
             else if (ch === '"') { state = 2; }
             else if (ch === '\\' && i + 1 < c.length) { current += c[++i]; }
             else { current += ch; }
@@ -1114,17 +1708,40 @@ function parseCurl(cmd) {
     }
     return result;
 }
-importCurlBtn.addEventListener('click', () => {
-    if (!activeCollection) { toast('Сначала выберите коллекцию.', 'warning'); return; }
+
+function importStepFromCurl(step, idx) {
     document.getElementById('curlInput').value = '';
     document.getElementById('curlModal').classList.add('active');
-});
+    window._currentStepForCurlImport = { step, idx };
+}
+
 document.getElementById('closeCurlModalBtn').addEventListener('click', () => document.getElementById('curlModal').classList.remove('active'));
 document.getElementById('parseCurlBtn').addEventListener('click', () => {
     const txt2 = document.getElementById('curlInput').value.trim();
     if (!txt2) { toast('Введите команду cURL', 'warning'); return; }
     const p = parseCurl(txt2);
     if (!p) { toast('Не удалось распознать cURL', 'error'); return; }
+
+    if (window._currentStepForCurlImport) {
+        const { step } = window._currentStepForCurlImport;
+        step.url = p.url;
+        step.method = p.method;
+        step.contentType = p.headers['Content-Type'] || step.contentType || 'application/json';
+        step.auth = p.headers['Authorization'] || step.auth || '';
+        step.body = p.body || step.body || '';
+
+        delete p.headers['Authorization'];
+        delete p.headers['Content-Type'];
+        step.customHeaders = { ...step.customHeaders, ...p.headers };
+
+        window._currentStepForCurlImport = null;
+        saveData();
+        renderSteps();
+        document.getElementById('curlModal').classList.remove('active');
+        toast('Шаг обновлён из cURL', 'success');
+        return;
+    }
+
     const newStep = {
         name: '', url: p.url, method: p.method,
         contentType: p.headers['Content-Type'] || 'application/json',
@@ -1140,14 +1757,9 @@ document.getElementById('parseCurlBtn').addEventListener('click', () => {
     toast('Шаг импортирован из cURL', 'success');
 });
 
-// ================== Кнопки папок и коллекций ==================
+// ================== Кнопки ==================
 newRootCollectionBtn.addEventListener('click', async () => {
-    const newCol = {
-        id: generateUniqueId(),
-        name: 'Новая коллекция',
-        steps: [],
-        folderId: null,
-    };
+    const newCol = { id: generateUniqueId(), name: 'Новая коллекция', steps: [], folderId: null };
     data.collections.push(newCol);
     await saveData();
     selectCollection(newCol.id);
@@ -1166,12 +1778,11 @@ newFolderBtn.addEventListener('click', async () => {
 
 addStepBtn.addEventListener('click', () => {
     if (!activeCollection) return;
-    activeCollection.steps.push({ name: '', url: '', method: 'GET', contentType: 'application/json', auth: '', body: '', customHeaders: {} });
+    activeCollection.steps.push({ name: '', url: '', method: 'GET', contentType: 'application/json', auth: '', body: '', customHeaders: [] });
     saveData();
     renderSteps();
 });
 
-// ================== Вкладки ==================
 tabBtns.forEach(b => {
     b.addEventListener('click', () => {
         tabBtns.forEach(x => x.classList.remove('active'));
@@ -1197,6 +1808,7 @@ function readDataFile() {
         reader.readAsText(file);
     });
 }
+
 dataFileInput.addEventListener('change', () => {
     selectedFileName.textContent = dataFileInput.files.length ? dataFileInput.files[0].name : 'Файл не выбран';
 });
@@ -1213,9 +1825,7 @@ document.addEventListener('keydown', async (e) => {
         currentStepForSend = null;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (sendRequestModal.classList.contains('active')) {
-            sendSingleBtn.click();
-        }
+        if (sendRequestModal.classList.contains('active')) sendSingleBtn.click();
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
         e.preventDefault();
@@ -1227,11 +1837,36 @@ document.addEventListener('keydown', async (e) => {
         searchInput.select();
     }
 });
-
-window.addEventListener('beforeunload', () => {
-    if (activeCollectionId) {
-        cleanupEmptyCollection(activeCollectionId);
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.method-dropdown')) {
+        document.querySelectorAll('.method-dropdown.open').forEach(d => {
+            d.classList.remove('open');
+        });
     }
+});
+window.addEventListener('beforeunload', () => {
+    if (activeCollectionId) cleanupEmptyCollection(activeCollectionId);
+});
+
+// ================== Глобальные кнопки ==================
+const globalJsonBtn = document.getElementById('globalJsonGeneratorBtn');
+const globalPostmanBtn = document.getElementById('globalImportPostmanBtn');
+const emptyNewColBtn = document.getElementById('emptyStateNewCollectionBtn');
+const emptyJsonBtn = document.getElementById('emptyStateJsonGeneratorBtn');
+const emptyPostmanBtn = document.getElementById('emptyStateImportPostmanBtn');
+
+if (globalJsonBtn) globalJsonBtn.addEventListener('click', () => jsonModal.classList.add('active'));
+if (globalPostmanBtn) globalPostmanBtn.addEventListener('click', () => toast('Импорт Postman пока не реализован', 'info'));
+if (emptyNewColBtn) emptyNewColBtn.addEventListener('click', () => newRootCollectionBtn.click());
+if (emptyJsonBtn) emptyJsonBtn.addEventListener('click', () => jsonModal.classList.add('active'));
+if (emptyPostmanBtn) emptyPostmanBtn.addEventListener('click', () => toast('Импорт Postman пока не реализован', 'info'));
+
+// Защита для старых кнопок (на случай если они отсутствуют в HTML)
+if (jsonGeneratorBtn) jsonGeneratorBtn.addEventListener('click', () => jsonModal.classList.add('active'));
+if (importCurlBtn) importCurlBtn.addEventListener('click', () => {
+    if (!activeCollection) { toast('Сначала выберите коллекцию.', 'warning'); return; }
+    document.getElementById('curlInput').value = '';
+    document.getElementById('curlModal').classList.add('active');
 });
 
 // Старт

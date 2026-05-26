@@ -1,9 +1,14 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AB Runner</title>
+    <!-- CodeMirror 5: базовые стили -->
+    <link rel="stylesheet" href="./node_modules/codemirror/lib/codemirror.css">
+    <!-- Аддон foldgutter (сворачивание блоков JSON) -->
+    <link rel="stylesheet" href="./node_modules/codemirror/addon/fold/foldgutter.css">
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -23,12 +28,17 @@
             </div>
             <div class="tree-container" id="treeContainer"></div>
             <div class="sidebar-footer">
-                <div class="theme-toggle">
-                    <span>Тема: <span id="themeName">Тёмная</span></span>
-                    <button id="themeToggleBtn">🔄 Сменить</button>
+                <div class="global-toolbar">
+                    <button id="globalJsonGeneratorBtn" class="secondary">📝 JSON</button>
+                    <button id="globalImportPostmanBtn" class="secondary">📥 Postman</button>
+                </div>
+                <div class="theme-toggle" id="themeToggle" data-tooltip="Тема: Тёмная. Кликните для смены">
+                    <button class="theme-icon-btn" id="themeToggleBtn" title="Сменить тему">🎨</button>
+                    <div class="theme-color-indicator" id="themeColorIndicator"></div>
+                    <span class="theme-label-mini" id="themeName">Тёмная</span>
                 </div>
                 <small style="color: var(--text-secondary);">Выберите коллекцию для редактирования</small>
-                <button id="toggleSidebarBtn" style="width:100%; margin-top: 6px;">☰ Скрыть панель</button>
+                <button id="toggleSidebarBtn">Скрыть панель</button>
             </div>
         </div>
         <div class="resizer" id="resizer"></div>
@@ -36,15 +46,18 @@
             <div id="emptyState" style="text-align:center; margin-top:100px; color: var(--text-secondary);">
                 <h2>👈 Выберите или создайте коллекцию</h2>
                 <p>Коллекции содержат шаги (запросы), выполняемые для каждого элемента данных.</p>
+                <div class="empty-state-actions">
+                    <button id="emptyStateNewCollectionBtn">➕ Новая коллекция</button>
+                    <button id="emptyStateJsonGeneratorBtn" class="secondary">📝 Создать JSON данных</button>
+                    <button id="emptyStateImportPostmanBtn" class="secondary">📥 Импорт Postman</button>
+                </div>
             </div>
             <div id="collectionEditor" style="display:none;">
                 <div class="collection-title-row">
                     <input type="text" id="collectionNameInput" placeholder="Название коллекции">
                     <button id="addStepBtn" class="secondary">+ Добавить шаг</button>
-                    <button id="jsonGeneratorBtn" class="secondary">📝 Создать JSON данных</button>
-                    <button id="importCurlBtn" class="secondary" title="Импортировать шаг из cURL">📋 Из cURL</button>
-                    <button id="importPostmanBtn" class="secondary" title="Импортировать коллекцию Postman">📥 Импорт
-                        Postman</button>
+                    <button id="jsonGeneratorBtn" class="secondary">📝 JSON</button>
+                    <button id="importCurlBtn" class="secondary" title="Импортировать шаг из cURL">📋 cURL</button>
                 </div>
                 <div class="tabs">
                     <button class="tab-btn active" data-tab="runner">Раннер</button>
@@ -162,8 +175,7 @@
         <div class="modal-content" style="width:600px;">
             <div class="modal-header">Импорт из cURL</div>
             <textarea id="curlInput" rows="8"
-                placeholder="curl -X POST 'https://api.example.com' -H 'Authorization: Bearer token' -d '{\"
-                key\":\"value\"}'"></textarea>
+                placeholder="curl -X POST 'https://api.example.com' -H 'Authorization: Bearer token' -d '{&quot;key&quot;:&quot;value&quot;}'"></textarea>
             <div class="modal-actions">
                 <button id="parseCurlBtn">Создать шаг</button>
                 <button id="closeCurlModalBtn" class="secondary">Отмена</button>
@@ -173,6 +185,21 @@
 
     <button id="sidebarToggleBtn" class="sidebar-toggle-btn">☰</button>
     <input type="file" id="postmanFileInput" accept=".json,.postman_collection" style="display:none;">
+
+    <!-- CodeMirror 5: ядро -->
+    <script src="./node_modules/codemirror/lib/codemirror.js"></script>
+    <!-- Режим JavaScript (включая JSON) -->
+    <script src="./node_modules/codemirror/mode/javascript/javascript.js"></script>
+    <!-- Аддоны, которые используются в createCodeMirrorEditor -->
+    <script src="./node_modules/codemirror/addon/fold/foldcode.js"></script>
+    <script src="./node_modules/codemirror/addon/fold/foldgutter.js"></script>
+    <script src="./node_modules/codemirror/addon/fold/brace-fold.js"></script>
+    <script src="./node_modules/codemirror/addon/edit/matchbrackets.js"></script>
+    <script src="./node_modules/codemirror/addon/edit/closebrackets.js"></script>
+    <script src="./node_modules/codemirror/addon/comment/comment.js"></script>
+    <script src="./node_modules/codemirror/addon/search/searchcursor.js"></script>
+    <script src="./node_modules/codemirror/addon/search/search.js"></script>
+    <script src="./node_modules/codemirror/addon/selection/active-line.js"></script>
 
     <script src="renderer.js"></script>
 </body>

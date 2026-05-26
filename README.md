@@ -162,3 +162,15 @@ HTTP-клиент: axios
 
 📄 Лицензия
 MIT. Используйте, модифицируйте и распространяйте свободно.
+
+
+git add main.js package.json
+git commit -m "многое добавили"
+git push origin main
+Создайте тег:
+
+bash
+git tag v1.0.7
+git push origin v1.0.7 
+
+не забудь
