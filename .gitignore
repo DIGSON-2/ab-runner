@@ -2,3 +2,12 @@ node_modules/
 dist/
 *.log
 .env
+.env.local
+*.exe
+*.dmg
+*.AppImage
+package-lock.json
+npm-debug.log*
+.DS_Store
+Thumbs.db
+build/

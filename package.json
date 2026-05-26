@@ -10,7 +10,10 @@
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "release": "electron-builder --publish always"
+    "release": "electron-builder --publish always",
+    "release:patch": "npm version patch && git push --follow-tags",
+    "release:minor": "npm version minor && git push --follow-tags",
+    "release:major": "npm version major && git push --follow-tags"
   },
   "repository": {
     "type": "git",
@@ -19,9 +22,7 @@
   "build": {
     "appId": "com.abrunner.app",
     "productName": "AB Runner",
-    "directories": {
-      "output": "dist"
-    },
+    "directories": { "output": "dist" },
     "files": [
       "main.js",
       "preload.js",
@@ -35,26 +36,34 @@
       "node_modules/js-yaml/**/*",
       "node_modules/lazy-val/**/*",
       "node_modules/builder-util-runtime/**/*",
-      "node_modules/semver/**/*"
+      "node_modules/semver/**/*",
+      "node_modules/async-exit-hook/**/*",
+      "node_modules/argparse/**/*",
+      "node_modules/debug/**/*",
+      "node_modules/ms/**/*",
+      "node_modules/proxy-from-env/**/*",
+      "node_modules/follow-redirects/**/*",
+      "node_modules/form-data/**/*",
+      "node_modules/asynckit/**/*",
+      "node_modules/combined-stream/**/*",
+      "node_modules/delayed-stream/**/*",
+      "node_modules/mime-types/**/*",
+      "node_modules/mime-db/**/*"
     ],
     "win": {
-      "target": [
-        "nsis"
-      ],
+      "target": ["nsis"],
       "signAndEditExecutable": false
     },
     "mac": {
-      "target": [
-        "dmg"
-      ],
+      "target": ["dmg"],
       "icon": "build/icon.icns",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
     },
     "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
+      "target": ["AppImage", "deb"],
       "icon": "build/icon.png",
       "category": "Development"
     },
