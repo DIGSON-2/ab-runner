@@ -1,6 +1,6 @@
 {
   "name": "final",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -19,57 +19,35 @@
   "build": {
     "appId": "com.abrunner.app",
     "productName": "AB Runner",
-    "directories": {
-      "output": "dist"
-    },
+    "directories": { "output": "dist" },
     "files": [
       "main.js",
       "preload.js",
       "renderer.html",
       "renderer.js",
       "style.css",
-      "node_modules/**/*"
+      "node_modules/codemirror/**/*",
+      "node_modules/axios/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/electron-log/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/semver/**/*"
     ],
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "signAndEditExecutable": false
-    },
-    "mac": {
-      "target": [
-        "dmg"
-      ],
-      "icon": "build/icon.icns",
-      "category": "public.app-category.developer-tools"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "icon": "build/icon.png",
-      "category": "Development"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
-    },
+    "win": { "target": ["nsis"], "signAndEditExecutable": false },
+    "mac": { "target": ["dmg"], "icon": "build/icon.icns", "category": "public.app-category.developer-tools" },
+    "linux": { "target": ["AppImage", "deb"], "icon": "build/icon.png", "category": "Development" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true },
     "publish": [
-      {
-        "provider": "github",
-        "owner": "DIGSON-2",
-        "repo": "ab-runner",
-        "releaseType": "draft"
-      }
+      { "provider": "github", "owner": "DIGSON-2", "repo": "ab-runner", "releaseType": "draft" }
     ]
   },
   "keywords": [],
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "axios": "^1.16.1",
+    "codemirror": "^5.65.18",
     "electron-updater": "^6.8.3"
   },
   "devDependencies": {
