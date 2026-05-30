@@ -23,6 +23,8 @@ function createWindow() {
     },
   });
   mainWindow.loadFile('renderer.html');
+  mainWindow.maximize(); // <--- ДОБАВЬТЕ ЭТУ СТРОКУ
+
 }
 
 // ------------------- Автообновление -------------------
@@ -209,11 +211,14 @@ ipcMain.handle('save-data', async (event, d) => {
   return { success: true };
 });
 
-// ------------------- Запуск коллекции -------------------
+// ------------------- Запуск коллекции (с таймингами) -------------------
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
   if (!Array.isArray(items)) return { success: false, error: 'Данные должны быть массивом' };
   const env = environment || {};
   let counter = 0;
+  const totalRequests = items.length * steps.length;
+  const startTime = Date.now();
+  const requestTimes = [];
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -222,12 +227,13 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
       const stepName = step.name || `Шаг ${j + 1}`;
       const currentUrl = replacePlaceholders(step.url, item, env);
       let requestBody = null;
+      const requestNumber = counter + 1;
+      const requestStartTime = Date.now();
 
       try {
         let data = undefined;
         if (step.body) {
           requestBody = stripJsonComments(replacePlaceholders(step.body, item, env, { toJson: true }));
-          // Безопасный парсинг JSON
           if (/json/.test(step.contentType || '')) {
             try { data = JSON.parse(requestBody); } catch (e) { data = requestBody; }
           } else {
@@ -244,6 +250,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         });
 
         counter++;
+        const requestDuration = Date.now() - requestStartTime;
+        requestTimes.push(requestDuration);
+
         addToHistory({
           timestamp: new Date().toISOString(),
           collection: collectionName,
@@ -260,6 +269,12 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           requestHeaders: headers,
         });
 
+        // Рассчитываем ETA
+        const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
+        const remainingRequests = totalRequests - counter;
+        const etaMs = remainingRequests * avgTime;
+        const elapsedMs = Date.now() - startTime;
+
         mainWindow.webContents.send('progress', {
           itemIndex: i, stepIndex: j,
           item: JSON.stringify(item),
@@ -267,6 +282,12 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           success: true,
           status: response.status,
           requestBody,
+          requestNumber,
+          totalRequests,
+          requestDuration,
+          elapsedMs,
+          etaMs,
+          avgRequestTime: Math.round(avgTime),
           response: {
             status: response.status,
             statusText: response.statusText,
@@ -276,6 +297,10 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           },
         });
       } catch (e) {
+        counter++;
+        const requestDuration = Date.now() - requestStartTime;
+        requestTimes.push(requestDuration);
+
         const status = e.response ? e.response.status : e.message;
         addToHistory({
           timestamp: new Date().toISOString(),
@@ -292,6 +317,11 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           responseHeaders: e.response?.headers,
         });
 
+        const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
+        const remainingRequests = totalRequests - counter;
+        const etaMs = remainingRequests * avgTime;
+        const elapsedMs = Date.now() - startTime;
+
         mainWindow.webContents.send('progress', {
           itemIndex: i, stepIndex: j,
           item: JSON.stringify(item),
@@ -300,6 +330,12 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           status,
           error: e.message,
           requestBody: requestBody || null,
+          requestNumber,
+          totalRequests,
+          requestDuration,
+          elapsedMs,
+          etaMs,
+          avgRequestTime: Math.round(avgTime),
           response: e.response ? {
             status: e.response.status,
             statusText: e.response.statusText,
@@ -314,9 +350,51 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
     }
   }
 
-  return { success: true, totalExecuted: counter };
+  const totalTime = Date.now() - startTime;
+  return {
+    success: true,
+    totalExecuted: counter,
+    totalTime,
+    avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0
+  };
 });
+// ------------------- Очистка истории с фильтрами -------------------
+ipcMain.handle('clear-history-filtered', async (event, filters) => {
+  const { timeFilter, typeFilter, methodFilter, statusFilter } = filters;
+  const now = Date.now();
 
+  const filteredHistory = history.filter(entry => {
+    // Фильтр по времени
+    if (timeFilter !== 'all') {
+      const entryTime = new Date(entry.timestamp).getTime();
+      const age = now - entryTime;
+      const hours = age / (1000 * 60 * 60);
+      const days = hours / 24;
+
+      if (timeFilter === '1h' && hours > 1) return true; // Оставляем
+      if (timeFilter === '24h' && hours > 24) return true;
+      if (timeFilter === '7d' && days > 7) return true;
+      if (timeFilter === '30d' && days > 30) return true;
+      if (timeFilter === '90d' && days > 90) return true;
+    }
+
+    // Фильтр по типу
+    if (typeFilter !== 'all' && entry.type !== typeFilter) return true;
+
+    // Фильтр по методу
+    if (methodFilter !== 'all' && entry.method !== methodFilter) return true;
+
+    // Фильтр по статусу
+    if (statusFilter === 'success' && !entry.success) return true;
+    if (statusFilter === 'error' && entry.success) return true;
+
+    return false; // Удаляем
+  });
+
+  history = filteredHistory;
+  saveHistory();
+  return { success: true, deleted: history.length - filteredHistory.length };
+});
 // ------------------- Одиночный запрос -------------------
 ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment }) => {
   const env = environment || {};
@@ -429,31 +507,89 @@ ipcMain.handle('save-file-dialog', async (event, content, defaultName = 'data.js
   return { success: false };
 });
 
-// ------------------- Импорт Postman -------------------
+// ------------------- Импорт Postman (только файлы) -------------------
 ipcMain.handle('open-postman-dialog', async () => {
   try {
     const { filePaths } = await dialog.showOpenDialog(mainWindow, {
-      title: 'Импорт из Postman (коллекции и окружения)',
+      title: 'Выберите JSON-файлы Postman',
       filters: [{ name: 'JSON', extensions: ['json'] }],
       properties: ['openFile', 'multiSelections']
     });
-    if (filePaths && filePaths.length > 0) {
-      const results = [];
-      for (const p of filePaths) {
-        try {
-          const content = fs.readFileSync(p, 'utf8');
-          const json = JSON.parse(content);
-          results.push({ fileName: path.basename(p), data: json });
-        } catch (e) {
-          console.error('Ошибка парсинга файла:', p, e);
-          results.push({ fileName: path.basename(p), error: e.message });
-        }
+    if (!filePaths || filePaths.length === 0) return [];
+
+    const results = [];
+    for (const p of filePaths) {
+      try {
+        const content = fs.readFileSync(p, 'utf8');
+        const json = JSON.parse(content);
+        results.push({ fileName: path.basename(p), data: json });
+      } catch (e) {
+        console.error('Ошибка парсинга файла:', p, e);
+        results.push({ fileName: path.basename(p), error: e.message });
       }
-      return results;
     }
-    return [];
+    return results;
   } catch (e) {
     console.error('open-postman-dialog error:', e);
+    return [];
+  }
+});
+
+// ------------------- Импорт Postman (только папка) -------------------
+ipcMain.handle('open-postman-folder-dialog', async () => {
+  try {
+    const { filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Выберите папку с JSON-файлами Postman',
+      properties: ['openDirectory']
+    });
+    if (!filePaths || filePaths.length === 0) return [];
+
+    const dirPath = filePaths[0];
+    const allJsonFiles = [];
+
+    // Рекурсивно собираем все JSON файлы из папки
+    function readJsonFilesRecursive(dir, fileList = []) {
+      try {
+        const files = fs.readdirSync(dir);
+        files.forEach(file => {
+          const filePath = path.join(dir, file);
+          try {
+            const stat = fs.statSync(filePath);
+            if (stat.isDirectory()) {
+              readJsonFilesRecursive(filePath, fileList);
+            } else if (stat.isFile() && file.toLowerCase().endsWith('.json')) {
+              fileList.push(filePath);
+            }
+          } catch (e) {
+            console.warn('Пропущен файл:', filePath, e.message);
+          }
+        });
+      } catch (e) {
+        console.warn('Не удалось прочитать папку:', dir, e.message);
+      }
+      return fileList;
+    }
+
+    readJsonFilesRecursive(dirPath, allJsonFiles);
+
+    if (allJsonFiles.length === 0) {
+      return [];
+    }
+
+    const results = [];
+    for (const filePath of allJsonFiles) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const json = JSON.parse(content);
+        results.push({ fileName: path.basename(filePath), data: json });
+      } catch (e) {
+        console.error('Ошибка парсинга файла:', filePath, e);
+        results.push({ fileName: path.basename(filePath), error: e.message });
+      }
+    }
+    return results;
+  } catch (e) {
+    console.error('open-postman-folder-dialog error:', e);
     return [];
   }
 });

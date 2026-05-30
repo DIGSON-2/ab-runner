@@ -8,7 +8,8 @@
         content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;">
     <title>AB Runner</title>
     <link rel="stylesheet" href="style.css">
-    <!-- CodeMirror 5 (необходим для редактора JSON) -->
+
+    <!-- CodeMirror 5 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
     <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldgutter.min.css">
@@ -30,7 +31,7 @@
 
 <body>
     <div class="app-container">
-        <!-- Кнопка вызова панели (скрыта, когда панель открыта) -->
+        <!-- Кнопка вызова панели -->
         <button id="sidebarToggleBtn" class="sidebar-toggle-btn">☰</button>
 
         <!-- Боковая панель -->
@@ -45,6 +46,7 @@
                     <option value="">No Environment</option>
                 </select>
                 <button id="manageEnvBtnGlobal" title="Управление окружениями">⚙️</button>
+                <button id="toggleRightPanelBtn" title="Панель переменных">📋</button>
             </div>
 
             <!-- Поиск -->
@@ -59,7 +61,15 @@
             <div class="sidebar-footer">
                 <div class="global-toolbar">
                     <button id="globalJsonGeneratorBtn">📝 JSON</button>
-                    <button id="globalImportPostmanBtn">📥 Postman</button>
+
+                    <div class="import-dropdown">
+                        <button id="globalImportBtn">📥 Импорт</button>
+                        <div id="importDropdownMenu" class="dropdown-menu">
+                            <button id="importFilesBtn">📄 Выбрать файлы</button>
+                            <button id="importFolderBtn">📁 Выбрать папку</button>
+                        </div>
+                    </div>
+
                     <button id="newFolderBtn">📁+</button>
                     <button id="newRootCollectionBtn">➕</button>
                 </div>
@@ -104,19 +114,34 @@
                 <div id="stepsContainer" class="steps-container"></div>
 
                 <div class="run-bar">
-                    <div class="file-input-wrapper">
-                        <label class="file-input-button">
-                            📂 Выберите файл
-                            <input type="file" id="dataFileInput" accept=".json">
-                        </label>
-                        <span id="selectedFileName" class="file-name">Файл не выбран</span>
+                    <div class="run-bar-controls">
+                        <div class="run-bar-left">
+                            <div class="run-bar-file">
+                                <div class="file-input-wrapper">
+                                    <label class="file-input-button">
+                                        📂 Выберите файл
+                                        <input type="file" id="dataFileInput" accept=".json">
+                                    </label>
+                                    <span id="selectedFileName" class="file-name">Файл не выбран</span>
+                                </div>
+                            </div>
+
+                            <div class="run-bar-delay">
+                                <label>
+                                    ⏱ Задержка (мс):
+                                    <input type="number" id="delayInput" value="0" min="0">
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="run-bar-right">
+                            <button id="runCollectionBtn">▶ Запустить</button>
+                        </div>
                     </div>
-                    <label style="display:flex;align-items:center;gap:6px;">
-                        Задержка (мс):
-                        <input type="number" id="delayInput" value="0" min="0" style="width:80px;">
-                    </label>
-                    <button id="runCollectionBtn">▶ Запустить</button>
-                    <span id="progress"></span>
+
+                    <div class="run-bar-progress">
+                        <div id="progress"></div>
+                    </div>
                 </div>
 
                 <div class="tabs">
@@ -129,9 +154,11 @@
                     <table id="runnerResultsTable" class="results-table">
                         <thead>
                             <tr>
+                                <th>#</th>
                                 <th>Элемент</th>
                                 <th>Шаг</th>
                                 <th>Статус</th>
+                                <th>Время</th>
                             </tr>
                         </thead>
                         <tbody></tbody>
@@ -145,7 +172,8 @@
                             <option value="">Все коллекции</option>
                         </select>
                         <button id="refreshHistoryBtn">🔄 Обновить</button>
-                        <button id="clearHistoryBtn" class="danger">🗑 Очистить историю</button>
+                        <button id="clearHistoryBtn" class="danger">🗑 Очистить всё</button>
+                        <button id="clearHistoryFilterBtn" class="secondary">⚙️ С фильтрами</button>
                     </div>
                     <table id="historyTable" class="results-table">
                         <thead>
@@ -164,6 +192,18 @@
                 </div>
             </div>
         </main>
+
+        <!-- Правая панель переменных -->
+        <aside id="rightPanel" class="right-panel hidden">
+            <div class="right-panel-header">
+                <span>🌍 Переменные</span>
+                <button id="closeRightPanelBtn"
+                    style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:16px;">✕</button>
+            </div>
+            <div id="envVarsContainer" class="env-vars-container">
+                <div class="empty-env-msg">Выберите окружение слева</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Модалка: Детали ответа -->
@@ -179,14 +219,42 @@
 
     <!-- Модалка: Отправить одиночный запрос -->
     <div id="sendRequestModal" class="modal">
-        <div class="modal-content">
-            <h3 class="modal-header">Отправить запрос</h3>
-            <div class="field">
-                <label>Тестовые данные (JSON, для замены плейсхолдеров)</label>
-                <textarea id="testDataInput">{}</textarea>
+        <div class="modal-content send-modal-layout" style="width: 650px;">
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">▶ Отправить запрос</h3>
+                <button id="closeSendModalBtn" class="modal-close-icon" title="Закрыть">✕</button>
             </div>
+
+            <div id="sendModalInfo" class="send-modal-info">
+                <div class="send-modal-step-name"></div>
+            </div>
+
+            <!-- Секция: Переменные окружения (read-only) -->
+            <div id="sendEnvVarsSection" class="send-vars-section" style="display:none;">
+                <h4 class="send-section-title">🌍 Из окружения <span class="send-section-hint">(подставятся
+                        автоматически)</span></h4>
+                <div id="sendEnvVarsContainer" class="send-vars-container"></div>
+            </div>
+
+            <!-- Секция: Переменные запроса (для ввода) -->
+            <div id="sendDataVarsSection" class="send-vars-section" style="display:none;">
+                <h4 class="send-section-title">📝 Переменные запроса <span class="send-section-hint">(введите
+                        значения)</span></h4>
+                <div id="sendDataVarsContainer" class="send-vars-container"></div>
+            </div>
+
+            <!-- Пустое состояние -->
+            <div id="sendNoVarsMsg" class="send-no-vars" style="display:none;">
+                <p>В запросе нет переменных. Запрос будет отправлен как есть.</p>
+            </div>
+
+            <!-- Сырой JSON (для продвинутых пользователей) -->
+            <details class="send-raw-json-details">
+                <summary>🔧 Сырой JSON (для редактирования)</summary>
+                <textarea id="testDataInput" class="send-raw-json-textarea">{}</textarea>
+            </details>
+
             <div class="modal-actions">
-                <button id="closeSendModalBtn" class="secondary">Закрыть</button>
                 <button id="sendSingleBtn">▶ Отправить</button>
             </div>
         </div>
@@ -235,27 +303,129 @@
             </div>
         </div>
     </div>
+
+    <!-- Модалка: Менеджер окружений -->
     <div id="envManagerModal" class="modal">
         <div class="modal-content" style="width: 500px;">
             <h3 class="modal-header">Управление окружениями</h3>
-
-            <!-- Форма создания -->
             <div style="display:flex; gap:8px; margin-bottom:16px;">
                 <input type="text" id="newEnvNameInput" placeholder="Название нового окружения" style="flex:1;">
                 <button id="createEnvBtn">Создать</button>
             </div>
-
-            <!-- Список -->
             <div id="envListContainer"
-                style="max-height: 300px; overflow-y: auto; display:flex; flex-direction:column; gap:8px;">
-                <!-- Сюда рендерится список JS-ом -->
-            </div>
-
+                style="max-height: 300px; overflow-y: auto; display:flex; flex-direction:column; gap:8px;"></div>
             <div class="modal-actions">
                 <button id="closeEnvManagerBtn" class="secondary">Закрыть</button>
             </div>
         </div>
     </div>
+
+    <!-- Модалка: Настройка очистки истории -->
+    <div id="clearHistoryModal" class="modal">
+        <div class="modal-content" style="width: 500px;">
+            <h3 class="modal-header">🗑 Настройка очистки истории</h3>
+            <p style="color: var(--text-secondary); margin-bottom: 16px;">Выберите критерии для удаления записей:</p>
+
+            <div class="field">
+                <label>Удалить записи старше</label>
+                <select id="clearHistoryTimeFilter">
+                    <option value="all">Всё время (удалить всё)</option>
+                    <option value="1h">Последнего часа</option>
+                    <option value="24h">Последних 24 часов</option>
+                    <option value="7d">Последних 7 дней</option>
+                    <option value="30d">Последних 30 дней</option>
+                    <option value="90d">Последних 90 дней</option>
+                </select>
+            </div>
+
+            <div class="field">
+                <label>Тип запроса</label>
+                <select id="clearHistoryTypeFilter">
+                    <option value="all">Все типы</option>
+                    <option value="single">Только одиночные (Send)</option>
+                    <option value="collection">Только коллекции (Runner)</option>
+                </select>
+            </div>
+
+            <div class="field">
+                <label>Метод запроса</label>
+                <select id="clearHistoryMethodFilter">
+                    <option value="all">Все методы</option>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                </select>
+            </div>
+
+            <div class="field">
+                <label>Статус ответа</label>
+                <select id="clearHistoryStatusFilter">
+                    <option value="all">Все статусы</option>
+                    <option value="success">Только успешные (2xx)</option>
+                    <option value="error">Только ошибки (4xx, 5xx)</option>
+                </select>
+            </div>
+
+            <div style="background: var(--bg-input); padding: 12px; border-radius: 6px; margin: 16px 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary);">Будет удалено записей:</span>
+                    <span id="clearHistoryPreview" style="font-weight: 600; color: var(--accent);">0</span>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="closeClearHistoryModalBtn" class="secondary">Отмена</button>
+                <button id="applyClearHistoryBtn" class="danger">🗑 Удалить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модалка глобальной истории -->
+    <div id="globalHistoryModal" class="modal">
+        <div class="modal-content history-modal-layout" style="width: 85vw; max-width: 1100px; max-height: 85vh;">
+
+            <!-- Липкий заголовок с крестиком -->
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">📜 Глобальная история запросов</h3>
+                <button id="closeGlobalHistoryBtn" class="modal-close-icon" title="Закрыть">✕</button>
+            </div>
+
+            <!-- Панель действий -->
+            <div class="history-actions">
+                <select id="globalHistoryFilter">
+                    <option value="">Все коллекции</option>
+                </select>
+                <button id="refreshGlobalHistoryBtn">🔄 Обновить</button>
+                <button id="clearGlobalHistoryBtn" class="danger">🗑 Очистить всё</button>
+                <button id="clearGlobalHistoryFilterBtn" class="secondary">⚙️ С фильтрами</button>
+            </div>
+
+            <!-- Зона скролла -->
+            <div class="history-scroll-area">
+                <table id="globalHistoryTable" class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Время</th>
+                            <th>Коллекция</th>
+                            <th>Тип</th>
+                            <th>Элемент</th>
+                            <th>Шаг</th>
+                            <th>URL</th>
+                            <th>Статус</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Плавающая кнопка истории -->
+    <button id="globalHistoryBtn" class="global-history-btn" title="Глобальная история">📜 История</button>
+
     <script src="renderer.js"></script>
 </body>
 
