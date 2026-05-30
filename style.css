@@ -1,4 +1,6 @@
 /* ================== CSS Variables ================== */
+
+/* 1. DARK THEME (Default - Deep Space) */
 :root {
   --bg-primary: #1a1a2e;
   --bg-sidebar: #12121f;
@@ -13,61 +15,127 @@
   --success-bg: rgba(46, 204, 113, 0.1);
   --error-bg: rgba(231, 76, 60, 0.1);
   --button-text: white;
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
+/* 2. LIGHT THEME (Clean Modern - Notion/Linear style) */
 body.light-theme {
-  --bg-primary: #f5f5f5;
+  --bg-primary: #f7f9fc;
+  /* Очень светлый серо-голубой, не режет глаза */
   --bg-sidebar: #ffffff;
   --bg-card: #ffffff;
-  --bg-input: #ffffff;
-  --border: #ddd;
-  --text-primary: #333;
-  --text-secondary: #666;
-  --accent: #6c63ff;
-  --accent-hover: #5a52d5;
-  --danger: #e74c3c;
-  --success-bg: rgba(46, 204, 113, 0.05);
-  --error-bg: rgba(231, 76, 60, 0.05);
+  --bg-input: #f0f2f5;
+  /* Светло-серый инпут */
+  --border: #e1e4e8;
+  --text-primary: #24292e;
+  --text-secondary: #586069;
+  --accent: #0366d6;
+  /* GitHub Blue - спокойный и профессиональный */
+  --accent-hover: #0255b3;
+  --danger: #cb2431;
+  --success-bg: rgba(40, 167, 69, 0.1);
+  --error-bg: rgba(203, 36, 49, 0.1);
   --button-text: white;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
+/* 3. RED-WHITE THEME -> Reimagined as "SAKURA / ROSE" (Soft & Elegant) */
 body.red-white-theme {
-  --bg-primary: #ffffff;
-  --bg-sidebar: #fafafa;
+  --bg-primary: #fff0f3;
+  /* Нежный розовый фон */
+  --bg-sidebar: #ffffff;
   --bg-card: #ffffff;
-  --bg-input: #ffffff;
-  --border: #e0e0e0;
-  --text-primary: #111;
-  --text-secondary: #555;
-  --accent: #fe2500;
-  --accent-hover: #d91e00;
-  --danger: #d00;
-  --success-bg: rgba(46, 204, 113, 0.06);
-  --error-bg: rgba(254, 37, 0, 0.08);
+  --bg-input: #fff5f7;
+  /* Очень светлый розовый инпут */
+  --border: #ffc2d1;
+  /* Розовая обводка */
+  --text-primary: #590d22;
+  /* Темно-бордовый текст (вместо черного) */
+  --text-secondary: #a4133c;
+  /* Светло-бордовый вторичный */
+  --accent: #ff4d6d;
+  /* Яркий розовый акцент */
+  --accent-hover: #c9184a;
+  --danger: #d00000;
+  --success-bg: rgba(46, 204, 113, 0.15);
+  --error-bg: rgba(255, 77, 109, 0.15);
   --button-text: white;
+  --shadow-sm: 0 2px 4px rgba(255, 77, 109, 0.1);
+  --shadow-md: 0 4px 12px rgba(255, 77, 109, 0.15);
 }
 
+/* 4. RED-BLACK THEME (Cyberpunk / Neon) */
 body.red-black-theme {
-  --bg-primary: #0a0a0a;
-  --bg-sidebar: #000000;
+  --bg-primary: #050505;
+  --bg-sidebar: #0a0a0a;
   --bg-card: #111111;
   --bg-input: #1a1a1a;
-  --border: #333;
-  --text-primary: #ddd;
-  --text-secondary: #999;
-  --accent: #fe2500;
-  --accent-hover: #d91e00;
-  --danger: #fe2500;
-  --success-bg: rgba(46, 204, 113, 0.15);
-  --error-bg: rgba(254, 37, 0, 0.15);
+  --border: #333333;
+  --text-primary: #eeeeee;
+  --text-secondary: #888888;
+  --accent: #ff003c;
+  /* Neon Red */
+  --accent-hover: #cc0030;
+  --danger: #ff003c;
+  --success-bg: rgba(0, 255, 136, 0.1);
+  --error-bg: rgba(255, 0, 60, 0.15);
   --button-text: white;
+  --shadow-sm: 0 0 5px rgba(255, 0, 60, 0.2);
+  --shadow-md: 0 0 15px rgba(255, 0, 60, 0.3);
 }
 
 /* ================== Base ================== */
-* {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* Добавим немного теней для карточек в светлых темах для объема */
+body.light-theme .step-card,
+body.light-theme .modal-content,
+body.red-white-theme .step-card,
+body.red-white-theme .modal-content {
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+body.light-theme .sidebar,
+body.red-white-theme .sidebar {
+  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.05);
+}
+
+/* ================== Base ================== */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 body {
@@ -90,9 +158,7 @@ body {
 .sidebar {
   width: 260px;
   min-width: 240px;
-  /* защита от сплющивания */
   max-width: 50vw;
-  /* защита от чрезмерного расширения */
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
@@ -159,7 +225,7 @@ body {
   min-height: 0;
 }
 
-/* ================== Tree Items (Postman-style compact) ================== */
+/* ================== Tree Items ================== */
 .folder-item,
 .collection-item {
   padding: 4px 8px;
@@ -210,7 +276,6 @@ body {
   min-width: 0;
 }
 
-/* Цветной бейдж метода слева от названия коллекции */
 .method-badge {
   display: inline-block;
   font-size: 9px;
@@ -260,7 +325,6 @@ body {
   display: none;
 }
 
-/* Стрелочка раскрытия у папок */
 .folder-item::before {
   content: '▶';
   font-size: 8px;
@@ -347,18 +411,59 @@ body {
   color: var(--accent);
 }
 
-/* ================== Sidebar Footer ================== */
+/* ================== Sidebar Footer & Toolbar ================== */
 .sidebar-footer {
-  padding: 12px;
+  padding: 14px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
-/* Тема — компактная круглая кнопка с индикатором */
+.global-toolbar {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.global-toolbar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  min-height: 38px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-toolbar button:hover {
+  background: var(--bg-card);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.global-toolbar button:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
 .theme-toggle {
   display: flex;
   align-items: center;
@@ -382,7 +487,6 @@ body {
   transform: translateY(0);
 }
 
-/* Круглая кнопка с иконкой */
 .theme-icon-btn {
   width: 36px;
   height: 36px;
@@ -409,7 +513,6 @@ body {
   transform: rotate(360deg);
 }
 
-/* Индикатор текущего цвета темы */
 .theme-color-indicator {
   width: 18px;
   height: 18px;
@@ -421,7 +524,6 @@ body {
   transition: background 0.3s;
 }
 
-/* Подпись "Тема" */
 .theme-label-mini {
   flex: 1;
   font-size: 12px;
@@ -433,7 +535,6 @@ body {
   min-width: 0;
 }
 
-/* Tooltip */
 .theme-toggle::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -474,11 +575,6 @@ body {
   transform: translateX(-50%) translateY(0);
 }
 
-.theme-toggle:hover::before {
-  transform: translateX(-50%);
-}
-
-/* Кнопка "Скрыть панель" */
 #toggleSidebarBtn {
   width: 100%;
   padding: 8px 12px;
@@ -576,7 +672,7 @@ button.danger {
   border-bottom-color: var(--accent);
 }
 
-/* ================== Tabs (основные) ================== */
+/* ================== Tabs ================== */
 .tabs {
   display: flex;
   gap: 4px;
@@ -602,6 +698,13 @@ button.danger {
 }
 
 /* ================== Steps ================== */
+.steps-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
 .steps-container {
   margin-top: 20px;
 }
@@ -980,7 +1083,6 @@ textarea {
   margin-bottom: 10px;
 }
 
-/* ================== Sidebar Toggle ================== */
 .sidebar-toggle-btn {
   position: fixed;
   left: 0;
@@ -1023,11 +1125,6 @@ textarea {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
-}
-
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
 /* ================== Drag & Drop ================== */
@@ -1144,7 +1241,7 @@ textarea {
   justify-content: flex-end;
 }
 
-/* ================== CodeMirror JSON Editor ================== */
+/* ================== CodeMirror ================== */
 .cm-wrapper {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1183,7 +1280,7 @@ textarea {
   cursor: pointer;
 }
 
-/* ===== DARK THEME (Dracula) ===== */
+/* DARK THEME */
 .cm-wrapper.theme-dark .CodeMirror {
   background: #1e1e2e;
   color: #f8f8f2;
@@ -1250,7 +1347,7 @@ textarea {
   background: rgba(189, 147, 249, 0.3) !important;
 }
 
-/* ===== LIGHT THEME (GitHub) ===== */
+/* LIGHT THEME */
 .cm-wrapper.theme-light .CodeMirror {
   background: #ffffff;
   color: #24292e;
@@ -1317,7 +1414,7 @@ textarea {
   background: rgba(108, 99, 255, 0.15) !important;
 }
 
-/* ===== RED-WHITE THEME ===== */
+/* RED-WHITE THEME */
 .cm-wrapper.theme-red-white .CodeMirror {
   background: #ffffff;
   color: #111111;
@@ -1384,7 +1481,7 @@ textarea {
   background: rgba(254, 37, 0, 0.15) !important;
 }
 
-/* ===== RED-BLACK THEME (Cyberpunk) ===== */
+/* RED-BLACK THEME */
 .cm-wrapper.theme-red-black .CodeMirror {
   background: #0a0a0a;
   color: #eeeeee;
@@ -1451,7 +1548,6 @@ textarea {
   background: rgba(254, 37, 0, 0.3) !important;
 }
 
-/* Кнопка форматирования JSON */
 .field div[style*="justify-content:space-between"] button {
   opacity: 0.7;
   transition: opacity 0.2s, transform 0.2s;
@@ -1462,7 +1558,7 @@ textarea {
   transform: translateY(-1px);
 }
 
-/* ================== Step Tabs (как в Postman) ================== */
+/* ================== Step Tabs ================== */
 .step-tabs {
   display: flex;
   gap: 2px;
@@ -1509,53 +1605,44 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: stretch;
-  /* обе колонки растягиваются на всю высоту */
   margin-bottom: 16px;
 }
 
-/* Обе колонки (метод и URL) — одинаковая структура [label][input] */
 .url-method-row .field {
   margin-bottom: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* Метод — узкая колонка фиксированной ширины */
 .url-method-row .field:first-child {
   flex: 0 0 130px;
   max-width: 130px;
 }
 
-/* URL — занимает всё оставшееся место */
 .url-method-row .field:last-child {
   flex: 1;
   min-width: 0;
-  /* позволяет сжиматься */
 }
 
-/* Label'ы одинаковые */
 .url-method-row label {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 4px;
   text-transform: uppercase;
   flex-shrink: 0;
-  /* label не сжимается */
 }
 
-/* Input и select растягиваются на всю высоту */
 .url-method-row input,
 .url-method-row select {
   flex: 1;
   width: 100%;
 }
 
-/* ================== Method Select (устаревший, скрыт) ================== */
 .step-method {
   display: none;
 }
 
-/* ================== Headers Table (Postman-style) ================== */
+/* ================== Headers Table ================== */
 .headers-table {
   width: 100%;
   border-collapse: separate;
@@ -1591,7 +1678,6 @@ textarea {
   text-decoration: line-through;
 }
 
-/* Инпуты в хедерах */
 .headers-table input[type="text"] {
   width: 100%;
   padding: 6px 10px;
@@ -1615,7 +1701,6 @@ textarea {
   box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15);
 }
 
-/* Чекбокс enabled */
 .headers-table .header-enabled {
   width: 32px;
   text-align: center;
@@ -1643,7 +1728,6 @@ textarea {
   width: auto;
 }
 
-/* Кнопка удаления — круглая, аккуратная */
 .headers-table .header-actions {
   width: 36px;
   text-align: center;
@@ -1678,7 +1762,6 @@ tr.header-row:hover .header-remove-btn {
   color: var(--danger);
 }
 
-/* Кнопка добавления */
 .add-header-btn {
   background: transparent;
   border: 1px dashed var(--border);
@@ -1705,7 +1788,6 @@ tr.header-row:hover .header-remove-btn {
   font-weight: 700;
 }
 
-/* ================== cURL Button в шаге ================== */
 .curl-import-btn {
   background: var(--border);
   color: var(--text-primary);
@@ -1720,23 +1802,25 @@ tr.header-row:hover .header-remove-btn {
   background: var(--text-secondary);
 }
 
-/* ================== Global Toolbar ================== */
-.global-toolbar {
-  display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-sidebar);
-  flex-shrink: 0;
+/* ================== Empty State ================== */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-secondary);
 }
 
-.global-toolbar button {
-  flex: 1;
-  font-size: 13px;
-  padding: 8px 12px;
+.empty-state h2 {
+  font-size: 24px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
 }
 
-/* ================== Empty State Actions ================== */
+.empty-state p {
+  font-size: 14px;
+  max-width: 600px;
+  margin: 0 auto 24px;
+}
+
 .empty-state-actions {
   margin-top: 24px;
   display: flex;
@@ -1824,7 +1908,6 @@ tr.header-row:hover .header-remove-btn {
   background: rgba(108, 99, 255, 0.15);
 }
 
-/* Цвета для каждого метода */
 .method-dropdown[data-method="GET"] .method-selected,
 .method-option[data-method="GET"] {
   color: #49cc90;
@@ -1901,7 +1984,6 @@ tr.header-row:hover .header-remove-btn {
   display: none;
 }
 
-/* ================== cURL Modal ================== */
 #curlInput {
   width: 100%;
   min-height: 120px;
@@ -1914,4 +1996,73 @@ tr.header-row:hover .header-remove-btn {
   font-size: 13px;
   resize: vertical;
   margin-bottom: 12px;
+}
+
+/* ================== Environment Selector ================== */
+.environment-selector {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  flex-shrink: 0;
+}
+
+.environment-selector select {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.environment-selector select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.environment-selector button {
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--border);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.environment-selector button:hover {
+  background: var(--text-secondary);
+}
+
+/* ================== Environment Manager Modal ================== */
+.env-manager-item {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.env-manager-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.env-manager-header span {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.env-manager-header div {
+  display: flex;
+  gap: 6px;
 }
