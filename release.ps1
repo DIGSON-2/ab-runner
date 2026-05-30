@@ -15,7 +15,20 @@ $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 git add .
 git commit -m "chore: release v$version"
 git tag "v$version"
-git push --follow-tags
+
+# Явно отправляем тег (вместо --follow-tags)
+git push origin "v$version"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Failed to push tag v$version" -ForegroundColor Red
+    exit 1
+}
+
+# Пушим коммит
+git push origin HEAD
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Failed to push commit" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "[OK] Version: v$version, tag pushed" -ForegroundColor Green
 
@@ -37,11 +50,13 @@ $sizeMB = [math]::Round($exeFile.Length / 1MB, 2)
 Write-Host "[OK] Built: $($exeFile.Name)" -ForegroundColor Green
 Write-Host "     Size: $sizeMB MB" -ForegroundColor Gray
 
+# Проверяем GitHub CLI
 $hasGh = Get-Command gh -ErrorAction SilentlyContinue
 if (-not $hasGh) {
     Write-Host ""
     Write-Host "[WARN] GitHub CLI not installed!" -ForegroundColor Yellow
     Write-Host "       Install: winget install GitHub.cli" -ForegroundColor Gray
+    Write-Host "       Or download from https://github.com/cli/cli/releases" -ForegroundColor Gray
     Write-Host ""
     Write-Host "[FILE] Ready for manual upload:" -ForegroundColor Cyan
     Write-Host "       $($exeFile.FullName)" -ForegroundColor White
@@ -52,8 +67,17 @@ if (-not $hasGh) {
 
 Write-Host ""
 Write-Host "[3/5] Creating GitHub release..." -ForegroundColor Yellow
-$releaseArgs = @("release", "create", "v$version", "--title", "AB Runner v$version", "--generate-notes", $exeFile.FullName)
+$releaseArgs = @(
+    "release", "create", "v$version",
+    "--title", "AB Runner v$version",
+    "--generate-notes",
+    $exeFile.FullName
+)
 & gh @releaseArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] GitHub release creation failed" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "[DONE] Release v$version published!" -ForegroundColor Green
