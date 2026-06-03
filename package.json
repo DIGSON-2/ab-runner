@@ -1,6 +1,6 @@
 {
   "name": "final",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -10,10 +10,7 @@
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "release": "electron-builder --publish always",
-    "release:patch": "npm version patch && git push --follow-tags",
-    "release:minor": "npm version minor && git push --follow-tags",
-    "release:major": "npm version major && git push --follow-tags"
+    "release": "electron-builder --publish always"
   },
   "repository": {
     "type": "git",
@@ -23,6 +20,12 @@
     "appId": "com.digson.abrunner",
     "productName": "AB Runner",
     "artifactName": "AB-Runner-Setup-${version}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "DIGSON-2",
+      "repo": "ab-runner",
+      "releaseType": "release"
+    },
     "directories": {
       "output": "dist"
     },
@@ -52,7 +55,10 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
     }
   },
   "keywords": [],
