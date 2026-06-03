@@ -2463,21 +2463,113 @@ tr.header-row:hover .header-remove-btn {
   gap: 6px;
 }
 
+/* JSON Generator Styles */
 .field-row {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: flex-start;
 }
 
-.field-row .field-name,
-.field-row .field-values {
-  padding: 6px 10px;
-  background: var(--bg-input);
+.field-inputs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-name {
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.field-values {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
   color: var(--text-primary);
   font-size: 13px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  min-height: 80px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.field-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.remove-field-btn {
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+}
+
+.remove-field-btn:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
+#jsonPreview {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+}
+
+#jsonPreview label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+#jsonPreview pre {
+  background: var(--bg-primary);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.modal-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 .remove-field-btn {
@@ -2545,4 +2637,384 @@ tr.header-row:hover .header-remove-btn {
 .field div[style*="justify-content:space-between"] button:hover {
   opacity: 1;
   transform: translateY(-1px);
+}
+
+/* ================== Search Results ================== */
+.collection-item.search-result {
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px 12px;
+  gap: 4px;
+}
+
+.collection-item.search-result .collection-name {
+  width: 100%;
+  margin-right: 0;
+}
+
+.search-folder-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  padding: 2px 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  margin-top: 2px;
+}
+
+.collection-item.search-result .delete-collection-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.collection-item.search-result {
+  position: relative;
+  padding-right: 30px;
+}
+
+/* ================== Search Highlight Animation ================== */
+@keyframes highlight-pulse {
+  0% {
+    background: rgba(108, 99, 255, 0.4);
+    box-shadow: 0 0 0 0 rgba(108, 99, 255, 0.6);
+  }
+
+  50% {
+    background: rgba(108, 99, 255, 0.15);
+    box-shadow: 0 0 0 8px rgba(108, 99, 255, 0);
+  }
+
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 0 rgba(108, 99, 255, 0);
+  }
+}
+
+.collection-item.highlight-pulse {
+  animation: highlight-pulse 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: var(--radius-sm);
+}
+
+/* ================== CodeMirror Selection Fix ================== */
+.cm-wrapper .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.3) !important;
+}
+
+.cm-wrapper .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.4) !important;
+}
+
+/* DARK THEME */
+.cm-wrapper.theme-dark .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.3) !important;
+}
+
+.cm-wrapper.theme-dark .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.4) !important;
+}
+
+/* LIGHT THEME */
+.cm-wrapper.theme-light .CodeMirror-selected {
+  background: rgba(3, 102, 214, 0.2) !important;
+}
+
+.cm-wrapper.theme-light .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(3, 102, 214, 0.3) !important;
+}
+
+/* RED-WHITE THEME (Sakura) */
+.cm-wrapper.theme-red-white .CodeMirror-selected {
+  background: rgba(255, 77, 109, 0.25) !important;
+}
+
+.cm-wrapper.theme-red-white .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(255, 77, 109, 0.35) !important;
+}
+
+/* RED-BLACK THEME (Cyberpunk) */
+.cm-wrapper.theme-red-black .CodeMirror-selected {
+  background: rgba(255, 0, 60, 0.35) !important;
+}
+
+.cm-wrapper.theme-red-black .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(255, 0, 60, 0.45) !important;
+}
+
+/* ================== FIX: Selection Colors для всех тем ================== */
+
+/* Глобальное выделение текста во всем приложении */
+::selection {
+  background: rgba(108, 99, 255, 0.3);
+  color: inherit;
+}
+
+body.light-theme ::selection {
+  background: rgba(3, 102, 214, 0.2);
+}
+
+body.red-white-theme ::selection {
+  background: rgba(255, 77, 109, 0.25);
+}
+
+body.red-black-theme ::selection {
+  background: rgba(255, 0, 60, 0.35);
+  color: #eeeeee;
+}
+
+/* ================== CodeMirror Selection (Cyberpunk - недостающие стили) ================== */
+.cm-wrapper.theme-red-black .CodeMirror-selected {
+  background: rgba(255, 0, 60, 0.25) !important;
+}
+
+.cm-wrapper.theme-red-black .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(255, 0, 60, 0.35) !important;
+}
+
+.cm-wrapper.theme-red-black .CodeMirror-line::selection,
+.cm-wrapper.theme-red-black .CodeMirror-line>span::selection,
+.cm-wrapper.theme-red-black .CodeMirror-line>span>span::selection {
+  background: rgba(255, 0, 60, 0.35) !important;
+}
+
+/* Дополнительно: активная строка в Cyberpunk теме (чтобы не была слишком яркой) */
+.cm-wrapper.theme-red-black .CodeMirror-activeline-background {
+  background: rgba(255, 0, 60, 0.05) !important;
+}
+
+/* Исправление для DARK темы (если тоже слишком яркое) */
+.cm-wrapper.theme-dark .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.25) !important;
+}
+
+.cm-wrapper.theme-dark .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(108, 99, 255, 0.35) !important;
+}
+
+.cm-wrapper.theme-dark .CodeMirror-line::selection,
+.cm-wrapper.theme-dark .CodeMirror-line>span::selection,
+.cm-wrapper.theme-dark .CodeMirror-line>span>span::selection {
+  background: rgba(108, 99, 255, 0.35) !important;
+}
+/* ================== JSON Generator Modal ================== */
+.json-generator-modal {
+  width: 700px;
+  max-width: 90vw;
+  max-height: 85vh;
+}
+
+.json-generator-modal .modal-sticky-header {
+  margin-bottom: 16px;
+}
+
+.json-generator-modal .modal-description {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.json-generator-modal #fieldsContainer {
+  margin-bottom: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.json-generator-modal .field-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: flex-start;
+  background: var(--bg-input);
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.json-generator-modal .field-inputs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.json-generator-modal .field-name {
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.json-generator-modal .field-name:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.1);
+}
+
+.json-generator-modal .field-values {
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  min-height: 80px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.json-generator-modal .field-values:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.1);
+}
+
+.json-generator-modal .field-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  min-width: 120px;
+}
+
+.json-generator-modal .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.json-generator-modal .checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.json-generator-modal .remove-field-btn {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.json-generator-modal .remove-field-btn:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
+.json-generator-modal .add-field-button {
+  width: 100%;
+  padding: 12px;
+  background: transparent;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  margin-bottom: 16px;
+}
+
+.json-generator-modal .add-field-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(108, 99, 255, 0.05);
+}
+
+.json-generator-modal #jsonPreview {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.json-generator-modal #jsonPreview label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.json-generator-modal #jsonPreviewContent {
+  background: var(--bg-card);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: 'Consolas', 'Monaco', monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.json-generator-modal .modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.json-generator-modal .btn-secondary {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.json-generator-modal .btn-secondary:hover {
+  background: var(--border);
+  border-color: var(--text-secondary);
+}
+
+.json-generator-modal .btn-primary {
+  background: var(--accent-gradient);
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+  box-shadow: var(--shadow-sm);
+}
+
+.json-generator-modal .btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
 }

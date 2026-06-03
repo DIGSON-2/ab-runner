@@ -136,6 +136,7 @@
 
                         <div class="run-bar-right">
                             <button id="runCollectionBtn">▶ Запустить</button>
+                            <button id="stopCollectionBtn" class="danger" style="display: none;">⏹ Остановить</button>
                         </div>
                     </div>
 
@@ -276,18 +277,27 @@
 
     <!-- Модалка: Генератор JSON -->
     <div id="jsonModal" class="modal">
-        <div class="modal-content">
-            <h3 class="modal-header">Генератор JSON-данных</h3>
-            <p>Добавьте поля (ключи) и списки значений через запятую. Длины всех списков должны совпадать.</p>
-            <div id="fieldsContainer"></div>
-            <div class="modal-actions">
-                <button id="addFieldBtn" class="secondary">+ Добавить поле</button>
-                <button id="generateJsonBtn">Сгенерировать</button>
+        <div class="modal-content json-generator-modal">
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">🔧 Генератор JSON данных</h3>
+                <button id="closeModalBtn" class="modal-close-icon" title="Закрыть">✕</button>
             </div>
-            <pre id="jsonPreview"></pre>
-            <div class="modal-actions" style="margin-top: 12px;">
-                <button id="saveJsonBtn" class="secondary" style="display: none;">💾 Сохранить как...</button>
-                <button id="closeModalBtn">Закрыть</button>
+            <p class="modal-description">Добавьте поля для генерации массива объектов. Отметьте "Константа" если
+                значение должно быть одинаковым во всех объектах.</p>
+
+            <div id="fieldsContainer"></div>
+
+            <button id="addFieldBtn" class="btn-secondary add-field-btn">+ Добавить поле</button>
+
+            <div id="jsonPreview" style="display: none; margin-top: 20px;">
+                <label>Результат:</label>
+                <pre id="jsonPreviewContent"></pre>
+            </div>
+
+            <div class="modal-actions">
+                <button id="copyJsonBtn" class="btn-secondary" style="display: none;">📋 Копировать</button>
+                <button id="saveJsonBtn" class="btn-primary" style="display: none;">💾 Сохранить в файл</button>
+                <button id="generateJsonBtn" class="btn-primary">🎲 Сгенерировать</button>
             </div>
         </div>
     </div>

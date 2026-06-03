@@ -1,4 +1,4 @@
-// renderer.js – полная финальная версия
+// renderer.js – полная исправленная версия
 let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
 let activeCollection = null;
@@ -8,6 +8,7 @@ let currentStepForSend = null;
 let fullHistory = [];
 let sidebarWidth = 260;
 let generatedJsonString = '';
+let isRunning = false;
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
@@ -40,6 +41,7 @@ const newFolderBtn = document.getElementById('newFolderBtn');
 const newRootCollectionBtn = document.getElementById('newRootCollectionBtn');
 const addStepBtn = document.getElementById('addStepBtn');
 const runCollectionBtn = document.getElementById('runCollectionBtn');
+const stopCollectionBtn = document.getElementById('stopCollectionBtn');
 const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const clearHistoryFilterBtn = document.getElementById('clearHistoryFilterBtn');
@@ -94,6 +96,8 @@ const generateJsonBtn = document.getElementById('generateJsonBtn');
 const saveJsonBtn = document.getElementById('saveJsonBtn');
 const closeModalBtn = document.getElementById('closeModalBtn');
 const jsonPreview = document.getElementById('jsonPreview');
+const jsonPreviewContent = document.getElementById('jsonPreviewContent');
+const copyJsonBtn = document.getElementById('copyJsonBtn');
 const curlModal = document.getElementById('curlModal');
 const curlInput = document.getElementById('curlInput');
 const closeCurlModalBtn = document.getElementById('closeCurlModalBtn');
@@ -119,7 +123,7 @@ function createCodeMirrorEditor(textarea, initialValue = '') {
     const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
     const editor = CodeMirror(wrapper, {
         value: initialValue,
-        mode: { name: 'javascript', json: true, statementIndent: 2 },
+        mode: 'javascript',
         theme: 'default',
         lineNumbers: true,
         lineWrapping: true,
@@ -131,7 +135,18 @@ function createCodeMirrorEditor(textarea, initialValue = '') {
         indentWithTabs: false,
         foldGutter: true,
         gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
-        extraKeys: { 'Ctrl-/': 'toggleComment', 'Cmd-/': 'toggleComment', 'Ctrl-F': 'findPersistent', 'Cmd-F': 'findPersistent' }
+        extraKeys: {
+            'Ctrl-/': (cm) => {
+                cm.toggleComment({ line: "//", block: ["/*", "*/"], indent: false, padding: " ", fullLines: true });
+                return false;
+            },
+            'Cmd-/': (cm) => {
+                cm.toggleComment({ line: "//", block: ["/*", "*/"], indent: false, padding: " ", fullLines: true });
+                return false;
+            },
+            'Ctrl-F': 'findPersistent',
+            'Cmd-F': 'findPersistent',
+        }
     });
     editor.on('change', () => {
         textarea.value = editor.getValue();
@@ -168,30 +183,167 @@ function updateEditorsTheme() {
 // ================== JSON Formatter ==================
 function formatJSON(text) {
     if (!text || !text.trim()) return '';
-    let result = '', indent = 0, inString = false, stringChar = '', inLineComment = false, inBlockComment = false, inWord = false;
-    const indentStr = '  ';
-    const addNewline = () => { result += '\n' + indentStr.repeat(indent); inWord = false; };
-    const addChar = (c) => { result += c; };
-    const isWordChar = (c) => /[a-zA-Z0-9_]/.test(c);
-    const endsWithWhitespace = () => !result || /[\s]$/.test(result);
-    const trimTrailing = () => { result = result.replace(/[ \t]*\n([ \t]*\n)*/g, '\n').replace(/[ \t]+$/, ''); };
+    const tokens = [];
+    let i = 0;
+    let inString = false;
+    let stringChar = '';
+    let inLineComment = false;
+    let inBlockComment = false;
+    let currentToken = '';
 
-    for (let i = 0; i < text.length; i++) {
-        const c = text[i], next = text[i + 1];
-        if (inLineComment) { addChar(c); if (c === '\n') { inLineComment = false; result += indentStr.repeat(indent); } i++; continue; }
-        if (inBlockComment) { addChar(c); if (c === '*' && next === '/') { addChar('/'); inBlockComment = false; i += 2; } else i++; continue; }
-        if (inString) { addChar(c); if (c === '\\' && i + 1 < text.length) { addChar(text[++i]); i++; continue; } if (c === stringChar) { inString = false; inWord = false; } i++; continue; }
-        if (/\s/.test(c)) { if (inWord) inWord = false; i++; continue; }
-        if ((c === '"' || c === "'") && !inString) { if (!endsWithWhitespace() && !inWord && result && !/[{:,\[]$/.test(result)) result += ' '; addChar(c); inString = true; stringChar = c; inWord = false; i++; continue; }
-        if (c === '/' && next === '/') { if (result && !result.endsWith('\n') && !/\s$/.test(result)) result += ' '; addChar('/'); addChar('/'); inLineComment = true; inWord = false; i += 2; continue; }
-        if (c === '/' && next === '*') { if (result && !result.endsWith('\n') && !/\s$/.test(result)) result += ' '; addChar('/'); addChar('*'); inBlockComment = true; inWord = false; i += 2; continue; }
-        if (c === '{' || c === '[') { if (inWord) { result += ' '; inWord = false; } addChar(c); indent++; let j = i + 1, hasContent = false; while (j < text.length) { const ch = text[j]; if (/\s/.test(ch)) { j++; continue; } if ((ch === '}' && c === '{') || (ch === ']' && c === '[')) break; if (ch === '/' && (text[j+1] === '/' || text[j+1] === '*')) { j += 2; while(j < text.length && !((text[j] === '/' && text[j-1] === '/') || (text[j] === '*' && text[j+1] === '/'))) j++; continue; } hasContent = true; break; } if (hasContent) addNewline(); inWord = false; i++; continue; }
-        if (c === '}' || c === ']') { indent--; if (inWord) inWord = false; const trimmed = result.trimEnd(); const last = trimmed[trimmed.length - 1]; if (last !== '{' && last !== '[') { trimTrailing(); addNewline(); } else trimTrailing(); addChar(c); i++; continue; }
-        if (c === ',') { if (inWord) inWord = false; addChar(c); let j = i + 1; while(j < text.length) { const ch = text[j]; if (/\s/.test(ch)) { j++; continue; } if (ch === '/' && (text[j+1] === '/' || text[j+1] === '*')) { j += 2; while(j < text.length && text[j] !== '\n') j++; continue; } break; } if (text[j] !== '}' && text[j] !== ']') addNewline(); inWord = false; i++; continue; }
-        if (c === ':') { if (inWord) inWord = false; result = result.replace(/[\s]+$/, ''); addChar(c); result += ' '; inWord = false; i++; continue; }
-        if (isWordChar(c)) { if (!inWord && !endsWithWhitespace() && result && !/[{:,\[]$/.test(result)) result += ' '; addChar(c); inWord = true; i++; continue; }
-        if (inWord) inWord = false; if (!endsWithWhitespace() && result && !/[{:,\[]$/.test(result)) result += ' '; addChar(c); i++;
+    const pushToken = (type, value) => {
+        if (value.length > 0) tokens.push({ type, value });
+    };
+
+    while (i < text.length) {
+        const c = text[i];
+        const next = text[i + 1];
+
+        if (inLineComment) {
+            currentToken += c;
+            if (c === '\n') {
+                pushToken('line-comment', currentToken);
+                currentToken = '';
+                inLineComment = false;
+            }
+            i++;
+            continue;
+        }
+
+        if (inBlockComment) {
+            currentToken += c;
+            if (c === '*' && next === '/') {
+                currentToken += '/';
+                pushToken('block-comment', currentToken);
+                currentToken = '';
+                inBlockComment = false;
+                i += 2;
+            } else {
+                i++;
+            }
+            continue;
+        }
+
+        if (inString) {
+            currentToken += c;
+            if (c === '\\' && i + 1 < text.length) {
+                currentToken += text[i + 1];
+                i += 2;
+                continue;
+            }
+            if (c === stringChar) {
+                pushToken('string', currentToken);
+                currentToken = '';
+                inString = false;
+            }
+            i++;
+            continue;
+        }
+
+        if (c === '"' || c === "'") {
+            if (currentToken.trim()) pushToken('value', currentToken.trim());
+            currentToken = c;
+            inString = true;
+            stringChar = c;
+            i++;
+            continue;
+        }
+
+        if (c === '/' && next === '/') {
+            if (currentToken.trim()) pushToken('value', currentToken.trim());
+            currentToken = '//';
+            inLineComment = true;
+            i += 2;
+            continue;
+        }
+
+        if (c === '/' && next === '*') {
+            if (currentToken.trim()) pushToken('value', currentToken.trim());
+            currentToken = '/*';
+            inBlockComment = true;
+            i += 2;
+            continue;
+        }
+
+        if (c === '{' || c === '[' || c === '}' || c === ']' || c === ',' || c === ':') {
+            if (currentToken.trim()) pushToken('value', currentToken.trim());
+            pushToken('symbol', c);
+            currentToken = '';
+            i++;
+            continue;
+        }
+
+        if (/\s/.test(c)) {
+            if (currentToken.trim()) {
+                pushToken('value', currentToken.trim());
+                currentToken = '';
+            }
+            i++;
+            continue;
+        }
+
+        currentToken += c;
+        i++;
     }
+
+    if (currentToken.trim()) pushToken('value', currentToken.trim());
+
+    let result = '';
+    let indent = 0;
+    const indentStr = '  ';
+
+    const addNewline = () => { result += '\n' + indentStr.repeat(indent); };
+
+    for (let j = 0; j < tokens.length; j++) {
+        const token = tokens[j];
+        const prev = tokens[j - 1];
+        const next = tokens[j + 1];
+
+        if (token.type === 'symbol') {
+            if (token.value === '{' || token.value === '[') {
+                result += token.value;
+                indent++;
+                if (next && !(next.type === 'symbol' && (next.value === '}' || next.value === ']'))) {
+                    addNewline();
+                }
+            } else if (token.value === '}' || token.value === ']') {
+                indent--;
+                if (prev && !(prev.type === 'symbol' && (prev.value === '{' || prev.value === '['))) {
+                    addNewline();
+                }
+                result += token.value;
+            } else if (token.value === ',') {
+                result += ',';
+                if (next && !(next.type === 'symbol' && (next.value === '}' || next.value === ']'))) {
+                    addNewline();
+                }
+            } else if (token.value === ':') {
+                result += ': ';
+            }
+        } else if (token.type === 'line-comment') {
+            if (result.length > 0 && !result.endsWith('\n') && !result.endsWith(indentStr)) {
+                result += '\n' + indentStr.repeat(indent);
+            }
+            result += token.value.replace(/\n$/, '');
+            if (next) addNewline();
+        } else if (token.type === 'block-comment') {
+            if (result.length > 0 && !result.endsWith('\n') && !result.endsWith(' ')) {
+                result += ' ';
+            }
+            result += token.value;
+            if (next && next.type !== 'symbol') result += ' ';
+        } else if (token.type === 'string' || token.type === 'value') {
+            if (prev && prev.type === 'symbol' && prev.value === ':') {
+                // Пробел уже добавлен после :
+            } else if (prev && prev.type === 'symbol' && (prev.value === '{' || prev.value === '[' || prev.value === ',')) {
+                // Перенос строки уже добавлен
+            } else if (prev && result.length > 0 && !result.endsWith(' ') && !result.endsWith('\n')) {
+                result += ' ';
+            }
+            result += token.value;
+        }
+    }
+
     return result.trim();
 }
 
@@ -252,7 +404,7 @@ toggleSidebarBtn.addEventListener('click', () => {
 });
 sidebarToggleBtn.addEventListener('click', () => { sidebar.style.display = ''; resizer.classList.remove('hidden'); sidebar.style.width = sidebarWidth + 'px'; sidebarToggleBtn.style.display = 'none'; toggleSidebarBtn.textContent = '☰ Скрыть панель'; });
 
-// ================== Modals (No Overlay Close) ==================
+// ================== Modals ==================
 function setupModalClose() {
     document.querySelectorAll('.modal').forEach(m => {
         m.addEventListener('click', e => { if (e.target === m) { /* Overlay disabled */ } });
@@ -272,9 +424,38 @@ if (closeCurlModalBtn) closeCurlModalBtn.addEventListener('click', () => curlMod
 function getTrigrams(s) { const str = '  ' + s.toLowerCase() + ' '; const t = []; for (let i = 0; i < str.length - 2; i++) t.push(str.substring(i, i + 3)); return t; }
 function trigramSimilarity(a, b) { if (!a || !b) return 0; const ta = getTrigrams(a), tb = getTrigrams(b); if (!ta.length || !tb.length) return 0; const sa = new Set(ta); let i = 0; for (const x of tb) if (sa.has(x)) i++; return i / (ta.length + tb.length - i); }
 function getSearchText(col) { const p = [col.name || '']; if (col.steps) col.steps.forEach(s => p.push(s.name || '', s.method || '', s.url || '')); return p.join(' ').toLowerCase(); }
-function collectionRelevance(col, q) { const t = getSearchText(col); if (!q) return 1; if (t.includes(q)) return 1 + q.length / t.length; return trigramSimilarity(q, t); }
+function collectionRelevance(col, q) {
+    if (!q) return 1;
+    const searchText = getSearchText(col);
+    const colName = (col.name || '').toLowerCase();
+    const queryLower = q.toLowerCase();
+    let score = 0;
+    if (colName === queryLower) score += 1000;
+    else if (colName.startsWith(queryLower)) score += 500;
+    else if (colName.includes(queryLower)) score += 200;
+    if (col.steps && Array.isArray(col.steps)) {
+        col.steps.forEach((step) => {
+            const stepName = (step.name || '').toLowerCase();
+            const stepUrl = (step.url || '').toLowerCase();
+            if (stepName.includes(queryLower)) {
+                score += 50;
+                const position = stepName.indexOf(queryLower);
+                score += Math.max(0, 20 - position);
+            }
+            if (stepUrl.includes(queryLower)) {
+                score += 30;
+                const position = stepUrl.indexOf(queryLower);
+                score += Math.max(0, 15 - position);
+            }
+        });
+    }
+    if (searchText.includes(queryLower)) score += 10;
+    const trigramScore = trigramSimilarity(queryLower, searchText);
+    score += trigramScore * 50;
+    return score;
+}
 const SEARCH_THRESHOLD = 0.15;
-function matchesCollection(col) { return !searchQuery || collectionRelevance(col, searchQuery) > SEARCH_THRESHOLD; }
+function matchesCollection(col) { if (!searchQuery) return true; return collectionRelevance(col, searchQuery) > SEARCH_THRESHOLD; }
 searchInput.addEventListener('input', () => { searchQuery = searchInput.value.trim().toLowerCase(); renderTree(); });
 
 function prepareSearchState() {
@@ -358,7 +539,6 @@ if (createEnvBtn) createEnvBtn.addEventListener('click', () => {
         toast(`Создано: ${name}`, 'success');
     });
 });
-
 function renderEnvList() {
     if (!envListContainer) return;
     envListContainer.innerHTML = '';
@@ -430,7 +610,6 @@ async function processPostmanFiles(files) {
         let json = fObj.data;
         const cleanKeys = obj => { if (!obj || typeof obj !== 'object') return obj; const n = {}; for (const k in obj) if (obj.hasOwnProperty(k)) n[k.trim()] = cleanKeys(obj[k]); return n; };
         if (Object.keys(json).some(k => k !== k.trim())) json = cleanKeys(json);
-
         if (json.info && json.info.schema && json.item) {
             const rootName = json.info.name || 'Imported Collection';
             let root = data.folders.find(f => f.name === rootName && f.parentId === null);
@@ -459,7 +638,6 @@ async function processPostmanFiles(files) {
     saveData(); renderTree(); updateEnvironmentSelector();
     if (cols || folds) toast(`Импорт: ${folds} папок, ${cols} запросов`, 'success');
 }
-
 function parsePostmanItems(items, pId) {
     if (!Array.isArray(items)) return;
     items.forEach(it => {
@@ -525,7 +703,6 @@ function renderFolderChildren(folderId, container, level) {
         const child = document.createElement('div'); child.className = 'folder-children' + (isCol ? ' collapsed' : ''); child.dataset.folderId = folder.id;
         container.append(div, child);
         renderFolderContents(folder.id, child, level + 1);
-
         div.addEventListener('click', e => {
             if (e.target.classList.contains('delete-folder-btn') || e.target.classList.contains('folder-add-collection-btn')) return;
             if (searchQuery && searchExpandedFolders.has(folder.id)) return;
@@ -539,7 +716,6 @@ function renderFolderChildren(folderId, container, level) {
         child.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); if (!e.dataTransfer.types.includes('text/plain')) return; child.classList.add('drag-over'); div.classList.add('drag-over'); e.dataTransfer.dropEffect = 'move'; });
         child.addEventListener('dragleave', e => { if (!child.contains(e.relatedTarget)) { child.classList.remove('drag-over'); div.classList.remove('drag-over'); } });
         child.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); child.classList.remove('drag-over'); div.classList.remove('drag-over'); const d = e.dataTransfer.getData('text/plain'); if (d === 'folder:' + folder.id) return; handleDropOnFolder(d, folder.id); });
-
         delB.addEventListener('click', async e => {
             e.stopPropagation();
             if (await confirmDialog('Удалить папку', `Удалить "${folder.name}" и всё содержимое?`)) {
@@ -553,15 +729,116 @@ function renderFolderChildren(folderId, container, level) {
         });
         addB.addEventListener('click', async e => { e.stopPropagation(); const nc = { id: generateUniqueId(), name: 'Новая коллекция', steps: [], folderId: folder.id }; data.collections.push(nc); await saveData(); selectCollection(nc.id); renderTree(); });
     });
-    collections.filter(c => c.folderId === folderId && matchesCollection(c)).forEach(col => renderCollectionItem(col, container, level + 1));
+    const filteredCollections = collections
+        .filter(c => c.folderId === folderId && matchesCollection(c))
+        .map(col => ({ col, score: collectionRelevance(col, searchQuery) }))
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.col);
+    filteredCollections.forEach(col => renderCollectionItem(col, container, level + 1));
 }
 function handleDropOnFolder(d, target) { if (!d) return; if (d.startsWith('col:')) moveCollectionToFolder(d.slice(4), target); else if (d.startsWith('folder:')) { const fid = d.slice(7); if (fid !== target && !isDescendant(target, fid)) moveFolderToFolder(fid, target); } }
 function isDescendant(fid, anc) { const f = data.folders.find(x => x.id === fid); if (!f) return false; if (f.parentId === anc) return true; if (!f.parentId) return false; return isDescendant(f.parentId, anc); }
 function renderFolderContents(fid, c, l) { renderFolderChildren(fid, c, l); }
 let treeListeners = false;
 function renderTree() {
-    prepareSearchState(); treeContainer.innerHTML = ''; renderFolderChildren(null, treeContainer, 0);
-    if (!treeListeners) { treeListeners = true; treeContainer.addEventListener('dragover', e => { e.preventDefault(); treeContainer.classList.add('drag-over-root'); e.dataTransfer.dropEffect = 'move'; }); treeContainer.addEventListener('dragleave', e => { if (!treeContainer.contains(e.relatedTarget)) treeContainer.classList.remove('drag-over-root'); }); treeContainer.addEventListener('drop', e => { if (e.target === treeContainer) { e.preventDefault(); treeContainer.classList.remove('drag-over-root'); const d = e.dataTransfer.getData('text/plain'); if (d.startsWith('col:')) moveCollectionToFolder(d.slice(4), null); else if (d.startsWith('folder:')) moveFolderToFolder(d.slice(7), null); } }); }
+    prepareSearchState();
+    treeContainer.innerHTML = '';
+    if (searchQuery) {
+        renderSearchResults();
+    } else {
+        renderFolderChildren(null, treeContainer, 0);
+    }
+    if (!treeListeners) {
+        treeListeners = true;
+        treeContainer.addEventListener('dragover', e => { e.preventDefault(); treeContainer.classList.add('drag-over-root'); e.dataTransfer.dropEffect = 'move'; });
+        treeContainer.addEventListener('dragleave', e => { if (!treeContainer.contains(e.relatedTarget)) treeContainer.classList.remove('drag-over-root'); });
+        treeContainer.addEventListener('drop', e => {
+            if (e.target === treeContainer) {
+                e.preventDefault(); treeContainer.classList.remove('drag-over-root');
+                const d = e.dataTransfer.getData('text/plain');
+                if (d.startsWith('col:')) moveCollectionToFolder(d.slice(4), null);
+                else if (d.startsWith('folder:')) moveFolderToFolder(d.slice(7), null);
+            }
+        });
+    }
+}
+function renderSearchResults() {
+    const allCollections = data.collections || [];
+    const folders = data.folders || [];
+    const results = allCollections
+        .filter(col => matchesCollection(col))
+        .map(col => {
+            let folderPath = '';
+            let currentFolderId = col.folderId;
+            const pathParts = [];
+            while (currentFolderId) {
+                const folder = folders.find(f => f.id === currentFolderId);
+                if (folder) { pathParts.unshift(folder.name); currentFolderId = folder.parentId; } else break;
+            }
+            folderPath = pathParts.join(' / ');
+            return { col, score: collectionRelevance(col, searchQuery), folderPath };
+        })
+        .sort((a, b) => b.score - a.score);
+    results.forEach(result => renderCollectionItemWithFolder(result.col, treeContainer, result.folderPath));
+}
+function renderCollectionItemWithFolder(col, container, folderPath) {
+    const div = document.createElement('div');
+    div.className = `collection-item search-result${activeCollectionId === col.id ? ' active' : ''}`;
+    div.dataset.collectionId = col.id;
+    div.draggable = true;
+    const nm = document.createElement('span');
+    nm.className = 'collection-name';
+    nm.title = 'Двойной клик для переименования';
+    const badge = getCollectionMethodBadge(col);
+    if (badge) { const b = document.createElement('span'); b.className = 'method-badge'; b.dataset.method = badge === 'MIX' ? '' : badge; b.textContent = badge; nm.append(b, document.createTextNode(' ')); }
+    const icon = getCollectionIcon(col);
+    if (icon) nm.appendChild(document.createTextNode(icon + ' '));
+    nm.appendChild(document.createTextNode(col.name || 'Без названия'));
+    const del = document.createElement('button'); del.className = 'delete-collection-btn'; del.textContent = '✕';
+    div.append(nm, del);
+    if (folderPath) {
+        const pathLabel = document.createElement('div');
+        pathLabel.className = 'search-folder-path';
+        pathLabel.textContent = folderPath;
+        div.appendChild(pathLabel);
+    }
+    div.addEventListener('click', e => {
+        if (e.target.classList.contains('delete-collection-btn')) return;
+        if (div.classList.contains('search-result')) {
+            searchQuery = '';
+            searchInput.value = '';
+            expandParentsOf(col.id);
+            saveData().then(() => {
+                selectCollection(col.id);
+                setTimeout(() => {
+                    const activeItem = document.querySelector(`.collection-item[data-collection-id="${col.id}"]`);
+                    if (activeItem) {
+                        activeItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        activeItem.classList.add('highlight-pulse');
+                        setTimeout(() => activeItem.classList.remove('highlight-pulse'), 1500);
+                    }
+                }, 50);
+            });
+        } else {
+            selectCollection(col.id);
+        }
+    });
+    del.addEventListener('click', async e => {
+        e.stopPropagation();
+        if (await confirmDialog('Удалить коллекцию', 'Удалить эту коллекцию?')) {
+            data.collections = data.collections.filter(c => c.id !== col.id);
+            if (activeCollectionId === col.id) { activeCollectionId = null; activeCollection = null; showEmptyState(); }
+            saveData(); renderTree(); toast('Коллекция удалена', 'success');
+        }
+    });
+    nm.addEventListener('dblclick', async e => {
+        e.stopPropagation();
+        const n = await showInputModal('Новое название', col.name);
+        if (n) { col.name = n; await saveData(); renderTree(); if (activeCollectionId === col.id) collectionNameInput.value = col.name; toast('Переименовано', 'success'); }
+    });
+    div.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', 'col:' + col.id); e.dataTransfer.effectAllowed = 'move'; div.classList.add('dragging'); });
+    div.addEventListener('dragend', () => div.classList.remove('dragging'));
+    container.appendChild(div);
 }
 function renderCollectionItem(col, container, lvl) {
     const div = document.createElement('div'); div.className = `collection-item${activeCollectionId === col.id ? ' active' : ''}`; div.dataset.collectionId = col.id; div.draggable = true; div.style.paddingLeft = (lvl * 16) + 'px';
@@ -581,6 +858,16 @@ function renderCollectionItem(col, container, lvl) {
 async function moveCollectionToFolder(cid, fid) { const c = data.collections.find(x => x.id === cid); if (c) { c.folderId = fid; await saveData(); renderTree(); } }
 async function moveFolderToFolder(fid, pid) { const f = data.folders.find(x => x.id === fid); if (f && fid !== pid) { f.parentId = pid; await saveData(); renderTree(); } }
 function cleanupEmptyCollection(cid) { const c = data.collections.find(x => x.id === cid); if (!c) return; if (!c.steps?.length && (!c.name || c.name === 'Новая коллекция') && !c.results?.length) { data.collections = data.collections.filter(x => x.id !== cid); saveData(); } }
+function expandParentsOf(collectionId) {
+    const col = data.collections.find(c => c.id === collectionId);
+    if (!col) return;
+    let currentFolderId = col.folderId;
+    const folders = data.folders || [];
+    while (currentFolderId) {
+        const folder = folders.find(f => f.id === currentFolderId);
+        if (folder) { folder.collapsed = false; currentFolderId = folder.parentId; } else break;
+    }
+}
 function selectCollection(id) { const prev = activeCollectionId; if (prev && prev !== id) cleanupEmptyCollection(prev); activeCollectionId = id; activeCollection = data.collections.find(c => c.id === id); if (!activeCollection) return; renderCollectionEditor(); renderTree(); }
 function showEmptyState() { collectionEditorEl.style.display = 'none'; emptyStateEl.style.display = 'block'; }
 function renderCollectionEditor() {
@@ -610,22 +897,18 @@ function createStepCard(step, idx) {
     const delB = document.createElement('button'); delB.className = 'danger'; delB.style.cssText = 'padding:2px 8px;font-size:12px;'; delB.textContent = 'Удалить';
     delB.onclick = async () => { if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) { activeCollection.steps.splice(idx, 1); saveData(); renderSteps(); toast('Шаг удалён', 'success'); } };
     acts.append(sendB, curlB, delB); hdr.append(nm, acts); card.appendChild(hdr);
-
     const nf = document.createElement('div'); nf.className = 'field'; nf.appendChild(txt('label', 'Название шага'));
     const ni = document.createElement('input'); ni.type = 'text'; ni.className = 'step-name-input'; ni.value = step.name || ''; ni.placeholder = 'Например: Логин'; nf.appendChild(ni); card.appendChild(nf);
-
     const umr = document.createElement('div'); umr.className = 'url-method-row';
     const mf = document.createElement('div'); mf.className = 'field'; mf.appendChild(txt('label', 'Метод'));
     const md = document.createElement('div'); md.className = 'method-dropdown'; md.dataset.method = step.method || 'GET';
     const ms = document.createElement('div'); ms.className = 'method-selected'; ms.textContent = step.method || 'GET';
     const mo = document.createElement('div'); mo.className = 'method-options';
-    ['GET','POST','PUT','PATCH','DELETE'].forEach(m => { const o = document.createElement('div'); o.className = 'method-option'; o.dataset.method = m; o.textContent = m; if (m === step.method) o.classList.add('selected'); o.onclick = () => { ms.textContent = m; md.dataset.method = m; mo.querySelectorAll('.method-option').forEach(x => x.classList.remove('selected')); o.classList.add('selected'); md.classList.remove('open'); md.dispatchEvent(new Event('input', { bubbles: true })); }; mo.appendChild(o); });
+    ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => { const o = document.createElement('div'); o.className = 'method-option'; o.dataset.method = m; o.textContent = m; if (m === step.method) o.classList.add('selected'); o.onclick = () => { ms.textContent = m; md.dataset.method = m; mo.querySelectorAll('.method-option').forEach(x => x.classList.remove('selected')); o.classList.add('selected'); md.classList.remove('open'); md.dispatchEvent(new Event('input', { bubbles: true })); }; mo.appendChild(o); });
     ms.onclick = e => { e.stopPropagation(); document.querySelectorAll('.method-dropdown.open').forEach(d => { if (d !== md) d.classList.remove('open'); }); md.classList.toggle('open'); };
     md.append(ms, mo); Object.defineProperty(md, 'value', { get: () => md.dataset.method }); mf.appendChild(md); umr.appendChild(mf);
-
     const uf = document.createElement('div'); uf.className = 'field'; uf.appendChild(txt('label', 'URL'));
     const ui = document.createElement('input'); ui.type = 'text'; ui.className = 'step-url'; ui.value = step.url || ''; ui.placeholder = 'http://api.example.com/{{id}}'; uf.appendChild(ui); umr.appendChild(uf); card.appendChild(umr);
-
     const tc = document.createElement('div'); tc.className = 'step-tabs';
     const tb = {}, tbc = {};
     const crt = (id, lbl) => { const b = document.createElement('button'); b.className = 'step-tab-btn'; b.textContent = lbl; b.dataset.tab = id; const c = document.createElement('div'); c.className = 'step-tab-content'; c.dataset.tab = id; tb[id] = b; tbc[id] = c; tc.appendChild(b); return { b, c }; };
@@ -633,26 +916,22 @@ function createStepCard(step, idx) {
     card.appendChild(tc);
     Object.keys(tb).forEach(id => { tb[id].onclick = () => { Object.values(tb).forEach(x => x.classList.remove('active')); Object.values(tbc).forEach(x => x.classList.remove('active')); tb[id].classList.add('active'); tbc[id].classList.add('active'); if (id === 'body') requestAnimationFrame(() => activeEditors.forEach(({ editor }) => { if (editor) editor.refresh(); })); }; });
     tb.headers.classList.add('active'); tbc.headers.classList.add('active');
-
-    let hArr = step.customHeaders; if (!Array.isArray(hArr)) hArr = (hArr && typeof hArr === 'object') ? Object.entries(hArr).map(([k,v]) => ({ key: k, value: String(v), enabled: true })) : []; step.customHeaders = hArr;
+    let hArr = step.customHeaders; if (!Array.isArray(hArr)) hArr = (hArr && typeof hArr === 'object') ? Object.entries(hArr).map(([k, v]) => ({ key: k, value: String(v), enabled: true })) : []; step.customHeaders = hArr;
     const ht = document.createElement('table'); ht.className = 'headers-table'; ht.innerHTML = `<thead><tr><th class="header-enabled"></th><th class="header-key">Ключ</th><th class="header-value">Значение</th><th class="header-actions"></th></tr></thead>`;
     const tbody = document.createElement('tbody'); ht.appendChild(tbody);
-    const dlId = 'hl-' + idx + '-' + Date.now(); const dl = document.createElement('datalist'); dl.id = dlId; ['Content-Type','Accept','Authorization','X-API-Key','User-Agent','Cache-Control','X-Request-ID'].forEach(h => { const o = document.createElement('option'); o.value = h; dl.appendChild(o); }); tbc.headers.appendChild(dl);
+    const dlId = 'hl-' + idx + '-' + Date.now(); const dl = document.createElement('datalist'); dl.id = dlId;['Content-Type', 'Accept', 'Authorization', 'X-API-Key', 'User-Agent', 'Cache-Control', 'X-Request-ID'].forEach(h => { const o = document.createElement('option'); o.value = h; dl.appendChild(o); }); tbc.headers.appendChild(dl);
     const renderHR = (hd, i) => { const tr = document.createElement('tr'); tr.className = 'header-row' + (hd.enabled ? '' : ' disabled'); const tdE = document.createElement('td'); tdE.className = 'header-enabled'; const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = hd.enabled !== false; cb.onchange = () => { hd.enabled = cb.checked; tr.classList.toggle('disabled', !cb.checked); debouncedSave(); }; tdE.appendChild(cb); tr.appendChild(tdE); const tdK = document.createElement('td'); tdK.className = 'header-key'; const ki = document.createElement('input'); ki.type = 'text'; ki.setAttribute('list', dlId); ki.value = hd.key || ''; ki.placeholder = 'Название'; ki.autocomplete = 'off'; ki.oninput = () => { hd.key = ki.value.trim(); debouncedSave(); }; tdK.appendChild(ki); tr.appendChild(tdK); const tdV = document.createElement('td'); tdV.className = 'header-value'; const vi = document.createElement('input'); vi.type = 'text'; vi.value = hd.value || ''; vi.placeholder = 'Значение'; vi.oninput = () => { hd.value = vi.value; debouncedSave(); }; tdV.appendChild(vi); tr.appendChild(tdV); const tdA = document.createElement('td'); tdA.className = 'header-actions'; const rm = document.createElement('button'); rm.className = 'header-remove-btn'; rm.textContent = '✕'; rm.title = 'Удалить'; rm.onclick = () => { step.customHeaders.splice(i, 1); tr.style.opacity = '0'; tr.style.transform = 'translateX(10px)'; tr.style.transition = 'all 0.2s'; setTimeout(() => { tr.remove(); debouncedSave(); }, 180); }; tdA.appendChild(rm); tr.appendChild(tdA); tbody.appendChild(tr); };
     step.customHeaders.forEach((h, i) => renderHR(h, i));
     const addH = document.createElement('button'); addH.className = 'add-header-btn'; addH.textContent = 'Добавить заголовок'; addH.onclick = () => { const nh = { key: '', value: '', enabled: true }; step.customHeaders.push(nh); renderHR(nh, step.customHeaders.length - 1); debouncedSave(); }; tbc.headers.append(ht, addH);
-
     const af = document.createElement('div'); af.className = 'field'; af.appendChild(txt('label', 'Authorization')); const ai = document.createElement('input'); ai.type = 'text'; ai.className = 'step-auth'; ai.value = step.auth || ''; ai.placeholder = 'Bearer токен'; af.appendChild(ai); tbc.auth.appendChild(af);
-
     const bf = document.createElement('div'); bf.className = 'field'; const blr = document.createElement('div'); blr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'; blr.appendChild(txt('label', 'Тело запроса (JSON, Ctrl+/ для комментариев)')); const fmtB = document.createElement('button'); fmtB.className = 'secondary'; fmtB.style.cssText = 'padding:2px 10px;font-size:12px;'; fmtB.textContent = '🎨 Форматировать'; blr.appendChild(fmtB); const bta = document.createElement('textarea'); bta.className = 'step-body'; bta.value = step.body || ''; const eId = 'cm-' + idx + '-' + Date.now(); const { wrapper: cw, editor: ce } = createCodeMirrorEditor(bta, step.body || ''); activeEditors.set(eId, { editor: ce, wrapper: cw }); fmtB.onclick = e => { e.stopPropagation(); formatCurrentEditor(eId); }; bf.append(blr, cw); tbc.body.appendChild(bf);
     card.append(tbc.headers, tbc.auth, tbc.body);
-
     const save = () => { step.name = ni.value.trim(); step.url = ui.value.trim(); step.method = md.value; step.auth = ai.value.trim(); step.body = bta.value; md.dataset.method = step.method; nm.textContent = step.name || `Шаг ${idx + 1}`; debouncedSave(); };
     [ni, ui, md, ai, bta].forEach(el => el.addEventListener('input', save));
     return card;
 }
 
-// ================== Runner (с таймингами) ==================
+// ================== Runner ==================
 const formatTime = (ms) => {
     if (ms < 1000) return `${ms}ms`;
     const seconds = Math.floor(ms / 1000);
@@ -663,40 +942,17 @@ const formatTime = (ms) => {
 };
 
 runCollectionBtn.addEventListener('click', async () => {
-    if (!activeCollection || !activeCollection.steps?.length) { 
-        toast('Добавьте шаги', 'warning'); 
-        return; 
-    }
-    
-    let items; 
-    try { 
-        items = await readDataFile(); 
-    } catch (e) { 
-        toast('Ошибка файла: ' + e.message, 'error'); 
-        return; 
-    }
-    
-    const delay = parseInt(delayInput.value, 10) || 0; 
-    if (!activeCollection.results) activeCollection.results = []; 
-    else activeCollection.results.length = 0;
-    
-    runnerResultsBody.innerHTML = ''; 
-    progressEl.innerHTML = '<div style="color: var(--accent); font-style: italic; padding: 8px 0;">⏳ Запуск и выполнение запросов...</div>';
-    
-    try { 
-        const result = await window.api.runCollection(
-            activeCollection.steps, 
-            items, 
-            delay, 
-            activeCollection.name, 
-            getActiveEnvironment()
-        ); 
-        
+    if (!activeCollection || !activeCollection.steps?.length) { toast('Добавьте шаги', 'warning'); return; }
+    if (stopCollectionBtn) { stopCollectionBtn.style.display = 'flex'; runCollectionBtn.style.display = 'none'; }
+    isRunning = true;
+    let items; try { items = await readDataFile(); } catch (e) { toast('Ошибка файла: ' + e.message, 'error'); return; }
+    const delay = parseInt(delayInput.value, 10) || 0; if (!activeCollection.results) activeCollection.results = []; else activeCollection.results.length = 0;
+    runnerResultsBody.innerHTML = ''; progressEl.innerHTML = '<div style="color: var(--accent); font-style: italic; padding: 8px 0;">⏳ Запуск и выполнение запросов...</div>';
+    try {
+        const result = await window.api.runCollection(activeCollection.steps, items, delay, activeCollection.name, getActiveEnvironment());
         progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--success-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--success); margin-top: 12px;">
-                <div style="font-weight: 700; color: var(--success); font-size: 15px; display: flex; align-items: center; gap: 8px;">
-                    ✅ Выполнение завершено!
-                </div>
+                <div style="font-weight: 700; color: var(--success); font-size: 15px; display: flex; align-items: center; gap: 8px;">✅ Выполнение завершено!</div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
                     <div style="background: var(--bg-card); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
                         <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px;">Всего запросов</div>
@@ -713,62 +969,66 @@ runCollectionBtn.addEventListener('click', async () => {
                 </div>
             </div>
         `;
-        
-        toast('Коллекция выполнена', 'success'); 
+        toast('Коллекция выполнена', 'success');
     }
-    catch (e) { 
+    catch (e) {
         progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--error-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--danger); margin-top: 12px;">
                 <div style="font-weight: 700; color: var(--danger); font-size: 15px;">❌ Критическая ошибка выполнения</div>
                 <div style="color: var(--text-primary);">${escapeHtml(e.message)}</div>
             </div>
         `;
-        toast('Ошибка: ' + e.message, 'error'); 
+        toast('Ошибка: ' + e.message, 'error');
     }
+    if (stopCollectionBtn) { stopCollectionBtn.style.display = 'none'; runCollectionBtn.style.display = 'flex'; }
+    isRunning = false;
+    dataFileInput.value = '';
+    selectedFileName.textContent = 'Файл не выбран';
 });
 
+if (stopCollectionBtn) {
+    stopCollectionBtn.addEventListener('click', async () => {
+        if (await confirmDialog('Остановить выполнение', 'Прервать выполнение коллекции?')) {
+            stopCollectionBtn.disabled = true;
+            stopCollectionBtn.textContent = 'Остановка...';
+            const result = await window.api.stopCollection();
+            if (result.success) {
+                progressEl.innerHTML = `
+                    <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--warning); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--warning); margin-top: 12px;">
+                        <div style="font-weight: 700; color: var(--warning); font-size: 15px;">⏹ Выполнение остановлено пользователем</div>
+                    </div>
+                `;
+                toast('Выполнение остановлено', 'warning');
+            }
+            stopCollectionBtn.disabled = false;
+            stopCollectionBtn.textContent = '⏹ Остановить';
+            stopCollectionBtn.style.display = 'none';
+            runCollectionBtn.style.display = 'flex';
+        }
+    });
+}
+
+if (window.api.onStop) {
+    window.api.onStop(() => {
+        progressEl.innerHTML = `<div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--warning); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--warning); margin-top: 12px;"><div style="font-weight: 700; color: var(--warning); font-size: 15px;">⏹ Выполнение остановлено</div></div>`;
+        if (stopCollectionBtn) { stopCollectionBtn.style.display = 'none'; runCollectionBtn.style.display = 'flex'; }
+        isRunning = false;
+        toast('Выполнение остановлено', 'warning');
+    });
+}
+
 window.api.onProgress((progressData) => {
-    const { 
-        item, stepName, success, status, error, response,
-        requestNumber, totalRequests, requestDuration,
-        elapsedMs, etaMs, avgRequestTime
-    } = progressData;
-    
-    const row = document.createElement('tr'); 
-    row.className = success ? 'success' : 'error';
-    row.dataset.responseData = response ? JSON.stringify(response) : ''; 
-    row.dataset.error = error || ''; 
-    row.dataset.item = item; 
-    row.dataset.stepName = stepName;
-    
+    const { item, stepName, success, status, error, response, requestNumber, totalRequests, requestDuration, elapsedMs, etaMs, avgRequestTime } = progressData;
+    const row = document.createElement('tr'); row.className = success ? 'success' : 'error';
+    row.dataset.responseData = response ? JSON.stringify(response) : ''; row.dataset.error = error || ''; row.dataset.item = item; row.dataset.stepName = stepName; row.dataset.requestDuration = requestDuration || '';
     row.appendChild(txt('td', `${requestNumber}/${totalRequests}`));
-    row.appendChild(txt('td', item)); 
+    row.appendChild(txt('td', item));
     row.appendChild(txt('td', stepName));
-    
-    const td3 = document.createElement('td'); 
-    const badge = txt('span', success ? `✓ ${status}` : `✗ ${status || 'ERROR'}`, `status-badge ${success ? 'status-success' : 'status-error'}`); 
-    td3.appendChild(badge); 
-    row.appendChild(td3);
-    
-    const td4 = document.createElement('td');
-    td4.textContent = `${requestDuration}ms`;
-    td4.style.fontFamily = 'monospace';
-    td4.style.fontSize = '12px';
-    row.appendChild(td4);
-    
+    const td3 = document.createElement('td'); const badge = txt('span', success ? `✓ ${status}` : `✗ ${status || 'ERROR'}`, `status-badge ${success ? 'status-success' : 'status-error'}`); td3.appendChild(badge); row.appendChild(td3);
+    const td4 = document.createElement('td'); td4.textContent = `${requestDuration}ms`; td4.style.fontFamily = 'monospace'; td4.style.fontSize = '12px'; row.appendChild(td4);
     runnerResultsBody.appendChild(row);
-    
-    if (activeCollection) { 
-        if (!activeCollection.results) activeCollection.results = []; 
-        activeCollection.results.push({ 
-            item, stepName, success, status, error, 
-            responseData: row.dataset.responseData,
-            requestDuration 
-        }); 
-    }
-    
+    if (activeCollection) { if (!activeCollection.results) activeCollection.results = []; activeCollection.results.push({ id: generateUniqueId(), timestamp: new Date().toISOString(), item, stepName, success, status, error, responseData: row.dataset.responseData, requestDuration }); }
     row.addEventListener('dblclick', () => showResponseDetails(row));
-    
     const progressPercent = Math.round((requestNumber / totalRequests) * 100);
     progressEl.innerHTML = `
         <div style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
@@ -781,31 +1041,25 @@ window.api.onProgress((progressData) => {
     `;
 });
 
-function renderRunnerTable(res) { 
-    runnerResultsBody.innerHTML = ''; 
-    res.forEach(r => { 
-        const row = document.createElement('tr'); 
-        row.className = r.success ? 'success' : 'error'; 
-        row.dataset.responseData = r.responseData || ''; 
-        row.dataset.error = r.error || ''; 
-        row.dataset.item = r.item; 
-        row.dataset.stepName = r.stepName; 
-        row.append(txt('td', r.item || ''), txt('td', r.stepName || '')); 
-        const td = document.createElement('td'); 
-        td.appendChild(txt('span', r.success ? `✓ ${r.status}` : `✗ ${r.status || 'ERROR'}`, `status-badge ${r.success ? 'status-success' : 'status-error'}`)); 
-        row.appendChild(td); 
-        row.addEventListener('dblclick', () => showResponseDetails(row)); 
-        runnerResultsBody.appendChild(row); 
-    }); 
+function renderRunnerTable(res) {
+    runnerResultsBody.innerHTML = '';
+    res.forEach((r, index) => {
+        const row = document.createElement('tr'); row.className = r.success ? 'success' : 'error'; row.dataset.responseData = r.responseData || ''; row.dataset.error = r.error || ''; row.dataset.item = r.item; row.dataset.stepName = r.stepName; row.dataset.requestDuration = r.requestDuration || '';
+        row.appendChild(txt('td', `${index + 1}/${res.length}`));
+        row.appendChild(txt('td', r.item || ''));
+        row.appendChild(txt('td', r.stepName || ''));
+        const td = document.createElement('td'); td.appendChild(txt('span', r.success ? `✓ ${r.status}` : `✗ ${r.status || 'ERROR'}`, `status-badge ${r.success ? 'status-success' : 'status-error'}`)); row.appendChild(td);
+        const tdTime = document.createElement('td'); tdTime.textContent = r.requestDuration ? `${r.requestDuration}ms` : '—'; row.appendChild(tdTime);
+        row.addEventListener('dblclick', () => showResponseDetails(row)); runnerResultsBody.appendChild(row);
+    });
 }
 
-// ================== Send (Умная модалка с авто-парсингом) ==================
+// ================== Send ==================
 function extractVariables(step) {
     const dataVars = new Set();
     const envVars = new Set();
     const envRegex = /\{\{([^{}]+)\}\}/g;
     const dataRegex = /(?<!\{)\{([^{}]+)\}(?!\})/g;
-
     const scanString = (str) => {
         if (!str || typeof str !== 'string') return;
         let m;
@@ -814,17 +1068,11 @@ function extractVariables(step) {
         while ((m = dataRegex.exec(str)) !== null) dataVars.add(m[1].trim());
         dataRegex.lastIndex = 0;
     };
-
     const scanJsonValue = (value) => {
-        if (typeof value === 'string') {
-            scanString(value);
-        } else if (Array.isArray(value)) {
-            value.forEach(scanJsonValue);
-        } else if (value && typeof value === 'object') {
-            Object.values(value).forEach(scanJsonValue);
-        }
+        if (typeof value === 'string') scanString(value);
+        else if (Array.isArray(value)) value.forEach(scanJsonValue);
+        else if (value && typeof value === 'object') Object.values(value).forEach(scanJsonValue);
     };
-
     const stripJsonComments = (str) => {
         let result = '';
         let inString = false;
@@ -844,18 +1092,13 @@ function extractVariables(step) {
         }
         return result;
     };
-
     scanString(step.url);
     scanString(step.auth);
     if (Array.isArray(step.customHeaders)) {
         step.customHeaders.forEach(h => {
-            if (h.enabled !== false) {
-                scanString(h.key);
-                scanString(h.value);
-            }
+            if (h.enabled !== false) { scanString(h.key); scanString(h.value); }
         });
     }
-
     if (step.body && typeof step.body === 'string') {
         const cleanedBody = stripJsonComments(step.body).trim();
         try {
@@ -865,23 +1108,15 @@ function extractVariables(step) {
             scanString(step.body);
         }
     }
-
-    return {
-        dataVars: Array.from(dataVars).sort(),
-        envVars: Array.from(envVars).sort()
-    };
+    return { dataVars: Array.from(dataVars).sort(), envVars: Array.from(envVars).sort() };
 }
-
 function openSendModal(step) {
     currentStepForSend = step;
     sendRequestModal.classList.add('active');
-
     const infoEl = sendRequestModal.querySelector('.send-modal-step-name');
     if (infoEl) infoEl.textContent = `${step.method || 'GET'} ${step.name || 'Без названия'}`;
-
     const { dataVars, envVars } = extractVariables(step);
     const activeEnv = getActiveEnvironment();
-
     const envSection = document.getElementById('sendEnvVarsSection');
     const envContainer = document.getElementById('sendEnvVarsContainer');
     if (envContainer) {
@@ -896,22 +1131,12 @@ function openSendModal(step) {
                 label.innerHTML = `<span class="send-var-badge env">ENV</span> ${escapeHtml(varName)}`;
                 const value = document.createElement('div');
                 value.className = 'send-var-value';
-                if (varName in activeEnv) {
-                    value.textContent = activeEnv[varName];
-                    value.classList.add('has-value');
-                } else {
-                    value.textContent = '⚠ не задано в окружении';
-                    value.classList.add('no-value');
-                }
-                row.appendChild(label);
-                row.appendChild(value);
-                envContainer.appendChild(row);
+                if (varName in activeEnv) { value.textContent = activeEnv[varName]; value.classList.add('has-value'); }
+                else { value.textContent = '⚠ не задано в окружении'; value.classList.add('no-value'); }
+                row.appendChild(label); row.appendChild(value); envContainer.appendChild(row);
             });
-        } else {
-            envSection.style.display = 'none';
-        }
+        } else { envSection.style.display = 'none'; }
     }
-
     const dataSection = document.getElementById('sendDataVarsSection');
     const dataContainer = document.getElementById('sendDataVarsContainer');
     if (dataContainer) {
@@ -929,22 +1154,13 @@ function openSendModal(step) {
                 input.className = 'send-var-input';
                 input.placeholder = `Значение для ${varName}`;
                 input.dataset.varName = varName;
-                row.appendChild(label);
-                row.appendChild(input);
-                dataContainer.appendChild(row);
+                row.appendChild(label); row.appendChild(input); dataContainer.appendChild(row);
             });
-            setTimeout(() => {
-                const firstInput = dataContainer.querySelector('.send-var-input');
-                if (firstInput) firstInput.focus();
-            }, 100);
-        } else {
-            dataSection.style.display = 'none';
-        }
+            setTimeout(() => { const firstInput = dataContainer.querySelector('.send-var-input'); if (firstInput) firstInput.focus(); }, 100);
+        } else { dataSection.style.display = 'none'; }
     }
-
     const noVarsMsg = document.getElementById('sendNoVarsMsg');
     if (noVarsMsg) noVarsMsg.style.display = (envVars.length === 0 && dataVars.length === 0) ? 'block' : 'none';
-
     updateRawJsonFromInputs();
     if (dataContainer) {
         dataContainer.querySelectorAll('.send-var-input').forEach(input => {
@@ -952,7 +1168,6 @@ function openSendModal(step) {
         });
     }
 }
-
 function updateRawJsonFromInputs() {
     const dataContainer = document.getElementById('sendDataVarsContainer');
     if (!dataContainer || !testDataInput) return;
@@ -972,7 +1187,6 @@ function updateRawJsonFromInputs() {
     });
     testDataInput.value = JSON.stringify(obj, null, 2);
 }
-
 sendSingleBtn.addEventListener('click', async () => {
     if (!currentStepForSend) return;
     const td = testDataInput.value.trim();
@@ -990,7 +1204,7 @@ sendSingleBtn.addEventListener('click', async () => {
 
 // ================== History ==================
 async function loadHistory() { fullHistory = await window.api.getHistory(); updateHistoryFilter(); renderFilteredHistory(); }
-function updateHistoryFilter() { historyFilter.innerHTML = '<option value="">Все коллекции</option>'; [...new Set(fullHistory.map(h => h.collection).filter(Boolean))].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; historyFilter.appendChild(o); }); }
+function updateHistoryFilter() { historyFilter.innerHTML = '<option value="">Все коллекции</option>';[...new Set(fullHistory.map(h => h.collection).filter(Boolean))].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; historyFilter.appendChild(o); }); }
 function renderFilteredHistory() { const v = historyFilter.value; historyTableBody.innerHTML = ''; (v ? fullHistory.filter(h => h.collection === v) : fullHistory).forEach(e => { const row = document.createElement('tr'); row.className = e.success ? 'success' : 'error'; row.append(txt('td', new Date(e.timestamp).toLocaleString()), txt('td', e.collection || '—'), txt('td', e.type === 'single' ? 'Send' : 'Runner'), txt('td', e.item), txt('td', e.stepName)); const tu = txt('td', e.url); tu.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'; row.appendChild(tu); const ts = document.createElement('td'); ts.appendChild(txt('span', e.success ? `✓ ${e.status}` : `✗ ${e.status}`, `status-badge ${e.success ? 'status-success' : 'status-error'}`)); row.appendChild(ts); row.addEventListener('dblclick', () => showHistoryDetail(e)); historyTableBody.appendChild(row); }); }
 function showHistoryDetail(e) { const rd = { status: e.status, statusText: '', headers: e.responseHeaders || {}, data: e.responseData, url: e.url }; buildDetailContent({ responseData: JSON.stringify(rd), error: e.success ? null : e.error, url: e.url, requestBody: e.requestBody, requestHeaders: e.requestHeaders, item: e.item, stepName: e.stepName }); detailModalTitle.textContent = `История: ${e.stepName}`; detailModal.classList.add('active'); }
 refreshHistoryBtn.addEventListener('click', loadHistory);
@@ -998,7 +1212,7 @@ historyFilter.addEventListener('change', renderFilteredHistory);
 
 // ================== Details ==================
 function showResponseDetails(row) { buildDetailContent({ responseData: row.dataset.responseData, error: row.dataset.error, item: row.dataset.item, stepName: row.dataset.stepName, url: row.dataset.url, requestBody: row.dataset.requestBody, requestHeaders: row.dataset.requestHeaders }); detailModalTitle.textContent = `Детали: ${row.dataset.stepName}`; detailModal.classList.add('active'); }
-function formatJsonBlock(data) { if (data == null) return '<span style="color:var(--text-secondary)">Пусто</span>'; let str = typeof data === 'string' ? data : JSON.stringify(data); let fmt = str, isJ = false; try { const p = JSON.parse(str); fmt = JSON.stringify(p, null, 2); isJ = true; } catch(e) {} return `<pre class="${isJ ? 'json-display' : 'text-display'}">${escapeHtml(fmt)}</pre>`; }
+function formatJsonBlock(data) { if (data == null) return '<span style="color:var(--text-secondary)">Пусто</span>'; let str = typeof data === 'string' ? data : JSON.stringify(data); let fmt = str, isJ = false; try { const p = JSON.parse(str); fmt = JSON.stringify(p, null, 2); isJ = true; } catch (e) { } return `<pre class="${isJ ? 'json-display' : 'text-display'}">${escapeHtml(fmt)}</pre>`; }
 function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders }) {
     let html = '';
     if (responseData && responseData !== 'null' && responseData !== 'undefined') {
@@ -1014,9 +1228,9 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
             if (requestBody) html += `<div class="detail-section"><h3>Тело запроса</h3><div class="detail-field-value">${formatJsonBlock(requestBody)}<button class="copy-btn" data-copy="${escapeHtml(typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody))}">📋 Копировать</button></div></div>`;
             if (resp.headers) html += `<div class="detail-section"><h3>Заголовки ответа</h3><div class="detail-field-value">${formatJsonBlock(resp.headers)}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.headers, null, 2))}">📋 Копировать</button></div></div>`;
             html += `<div class="detail-section"><h3>Тело ответа</h3><div class="detail-field-value">${formatJsonBlock(resp.data)}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.data, null, 2))}">📋 Копировать</button></div></div>`;
-        } catch(e) { html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${formatJsonBlock(responseData)}</div></div>`; }
+        } catch (e) { html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${formatJsonBlock(responseData)}</div></div>`; }
     } else html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">Нет данных</div></div>`;
-    if (error) { html += `<div class="detail-section"><h3>Ошибка</h3><div class="detail-field-value" style="color:var(--danger);">${escapeHtml(error)}`; try { if (responseData) { const p = JSON.parse(responseData); if (p.data?.errors?.[0]) { const s = p.data.errors[0]; html += `<br><br><strong>Детали от сервера:</strong><br><strong>Статус:</strong> ${escapeHtml(s.status || '')}<br><strong>Заголовок:</strong> ${escapeHtml(s.title || '')}`; if (s.detail) html += `<br><strong>Описание:</strong> ${escapeHtml(s.detail)}<br>`; } } } catch(e) {} html += `</div></div>`; }
+    if (error) { html += `<div class="detail-section"><h3>Ошибка</h3><div class="detail-field-value" style="color:var(--danger);">${escapeHtml(error)}`; try { if (responseData) { const p = JSON.parse(responseData); if (p.data?.errors?.[0]) { const s = p.data.errors[0]; html += `<br><br><strong>Детали от сервера:</strong><br><strong>Статус:</strong> ${escapeHtml(s.status || '')}<br><strong>Заголовок:</strong> ${escapeHtml(s.title || '')}`; if (s.detail) html += `<br><strong>Описание:</strong> ${escapeHtml(s.detail)}<br>`; } } } catch (e) { } html += `</div></div>`; }
     detailContent.innerHTML = html;
     detailContent.querySelectorAll('[data-copy]').forEach(btn => { btn.onclick = () => { const t = btn.getAttribute('data-copy'); navigator.clipboard.writeText(t).then(() => { const o = btn.textContent; btn.textContent = '✓ Скопировано'; setTimeout(() => btn.textContent = o, 2000); }); }; });
 }
@@ -1024,7 +1238,7 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
 // ================== Global History ==================
 if (globalHistoryBtn) globalHistoryBtn.addEventListener('click', async () => { await loadGlobalHistory(); globalHistoryModal.classList.add('active'); });
 async function loadGlobalHistory() { fullHistory = await window.api.getHistory(); updateGlobalHistoryFilter(); renderGlobalHistoryTable(); }
-function updateGlobalHistoryFilter() { globalHistoryFilter.innerHTML = '<option value="">Все коллекции</option>'; [...new Set(fullHistory.map(h => h.collection).filter(Boolean))].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; globalHistoryFilter.appendChild(o); }); }
+function updateGlobalHistoryFilter() { globalHistoryFilter.innerHTML = '<option value="">Все коллекции</option>';[...new Set(fullHistory.map(h => h.collection).filter(Boolean))].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; globalHistoryFilter.appendChild(o); }); }
 function renderGlobalHistoryTable() { globalHistoryTableBody.innerHTML = ''; const v = globalHistoryFilter.value; (v ? fullHistory.filter(h => h.collection === v) : fullHistory).forEach(e => { const row = document.createElement('tr'); row.className = e.success ? 'success' : 'error'; row.append(txt('td', new Date(e.timestamp).toLocaleString()), txt('td', e.collection || '—'), txt('td', e.type === 'single' ? 'Send' : 'Runner'), txt('td', e.item), txt('td', e.stepName)); const tu = txt('td', e.url); tu.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'; row.appendChild(tu); const ts = document.createElement('td'); ts.appendChild(txt('span', e.success ? `✓ ${e.status}` : `✗ ${e.status}`, `status-badge ${e.success ? 'status-success' : 'status-error'}`)); row.appendChild(ts); row.addEventListener('dblclick', () => showHistoryDetail(e)); globalHistoryTableBody.appendChild(row); }); }
 globalHistoryFilter.addEventListener('change', renderGlobalHistoryTable);
 if (refreshGlobalHistoryBtn) refreshGlobalHistoryBtn.addEventListener('click', loadGlobalHistory);
@@ -1053,21 +1267,178 @@ if (applyClearHistoryBtn) applyClearHistoryBtn.addEventListener('click', async (
 });
 
 // ================== JSON Generator ==================
-if (jsonGeneratorBtn) jsonGeneratorBtn.addEventListener('click', () => jsonModal.classList.add('active'));
-if (addFieldBtn) addFieldBtn.addEventListener('click', () => { const row = document.createElement('div'); row.className = 'field-row'; const ni = document.createElement('input'); ni.type = 'text'; ni.placeholder = 'Название поля'; ni.className = 'field-name'; ni.style.flex = '1'; const vi = document.createElement('input'); vi.type = 'text'; vi.placeholder = 'Значения через запятую'; vi.className = 'field-values'; vi.style.flex = '2'; const rm = document.createElement('button'); rm.className = 'remove-field-btn'; rm.textContent = '✕'; rm.onclick = () => row.remove(); row.append(ni, vi, rm); fieldsContainer.appendChild(row); });
-if (generateJsonBtn) generateJsonBtn.addEventListener('click', () => { const fields = []; fieldsContainer.querySelectorAll('.field-row').forEach(r => { const n = r.querySelector('.field-name').value.trim(); const v = r.querySelector('.field-values').value.trim(); if (n && v) fields.push({ name: n, values: v.split(',').map(s => s.trim()) }); }); if (!fields.length) { toast('Добавьте поля', 'warning'); return; } const lens = fields.map(f => f.values.length); if (new Set(lens).size > 1) { toast('Длины массивов должны совпадать', 'error'); return; } const res = []; for (let i = 0; i < lens[0]; i++) { const o = {}; fields.forEach(f => o[f.name] = f.values[i]); res.push(o); } generatedJsonString = JSON.stringify(res, null, 2); jsonPreview.style.display = 'block'; jsonPreview.textContent = generatedJsonString; saveJsonBtn.style.display = 'inline-block'; });
-if (saveJsonBtn) saveJsonBtn.addEventListener('click', async () => { if (!generatedJsonString) return; const r = await window.api.saveFile(generatedJsonString); if (r.success) toast(`Сохранено: ${r.filePath}`, 'success'); });
+if (jsonGeneratorBtn) {
+    jsonGeneratorBtn.addEventListener('click', () => {
+        jsonModal.classList.add('active');
+        if (fieldsContainer.children.length === 0) {
+            addFieldBtn.click();
+        }
+    });
+}
 
+if (closeModalBtn) {
+    closeModalBtn.addEventListener('click', () => {
+        jsonModal.classList.remove('active');
+    });
+}
+
+if (addFieldBtn) {
+    addFieldBtn.addEventListener('click', () => {
+        const fieldRow = document.createElement('div');
+        fieldRow.className = 'field-row';
+
+        fieldRow.innerHTML = `
+            <div class="field-inputs">
+                <input type="text" class="field-name" placeholder="Имя поля (например: type)">
+                <textarea class="field-values" placeholder="Значения (каждое с новой строки)&#10;string&#10;number&#10;boolean"></textarea>
+            </div>
+            <div class="field-controls">
+                <label class="checkbox-label">
+                    <input type="checkbox" class="field-constant">
+                    <span>Константа</span>
+                </label>
+                <button class="remove-field-btn">✕ Удалить</button>
+            </div>
+        `;
+
+        const removeBtn = fieldRow.querySelector('.remove-field-btn');
+        removeBtn.addEventListener('click', () => {
+            fieldRow.remove();
+        });
+
+        fieldsContainer.appendChild(fieldRow);
+    });
+}
+
+if (generateJsonBtn) {
+    generateJsonBtn.addEventListener('click', () => {
+        const fields = [];
+        const fieldRows = fieldsContainer.querySelectorAll('.field-row');
+
+        for (let row of fieldRows) {
+            const nameInput = row.querySelector('.field-name');
+            const valuesTextarea = row.querySelector('.field-values');
+            const constantCheckbox = row.querySelector('.field-constant');
+
+            const name = nameInput.value.trim();
+            const valuesText = valuesTextarea.value.trim();
+            const isConstant = constantCheckbox.checked;
+
+            if (!name) {
+                toast('Все поля должны иметь имя', 'error');
+                return;
+            }
+
+            if (!valuesText) {
+                toast(`Поле "${name}" не содержит значений`, 'error');
+                return;
+            }
+
+            const values = valuesText.split('\n').map(v => v.trim()).filter(v => v);
+
+            if (values.length === 0) {
+                toast(`Поле "${name}" не содержит значений`, 'error');
+                return;
+            }
+
+            fields.push({ name, values, isConstant });
+        }
+
+        if (fields.length === 0) {
+            toast('Добавьте хотя бы одно поле', 'error');
+            return;
+        }
+
+        let maxLength = 1;
+        for (let field of fields) {
+            if (!field.isConstant) {
+                maxLength = Math.max(maxLength, field.values.length);
+            }
+        }
+
+        const result = [];
+        for (let i = 0; i < maxLength; i++) {
+            const obj = {};
+
+            for (let field of fields) {
+                let value;
+
+                if (field.isConstant) {
+                    value = field.values[0];
+                } else {
+                    const index = Math.min(i, field.values.length - 1);
+                    value = field.values[index];
+                }
+
+                obj[field.name] = parseJsonValue(value);
+            }
+
+            result.push(obj);
+        }
+
+        const jsonString = JSON.stringify(result, null, 2);
+        jsonPreview.style.display = 'block';
+        jsonPreviewContent.textContent = jsonString;
+
+        copyJsonBtn.style.display = 'inline-block';
+        saveJsonBtn.style.display = 'inline-block';
+
+        window.generatedJson = jsonString;
+
+        toast(`Сгенерировано ${result.length} объектов`, 'success');
+    });
+}
+
+function parseJsonValue(value) {
+    if (/^-?\d+$/.test(value)) return parseInt(value, 10);
+    if (/^-?\d*\.\d+$/.test(value)) return parseFloat(value);
+    if (value.toLowerCase() === 'true') return true;
+    if (value.toLowerCase() === 'false') return false;
+    if (value.toLowerCase() === 'null') return null;
+
+    if ((value.startsWith('{') && value.endsWith('}')) ||
+        (value.startsWith('[') && value.endsWith(']'))) {
+        try {
+            return JSON.parse(value);
+        } catch (e) { }
+    }
+
+    return value;
+}
+
+if (copyJsonBtn) {
+    copyJsonBtn.addEventListener('click', () => {
+        if (window.generatedJson) {
+            navigator.clipboard.writeText(window.generatedJson);
+            toast('JSON скопирован в буфер обмена', 'success');
+        }
+    });
+}
+
+if (saveJsonBtn) {
+    saveJsonBtn.addEventListener('click', () => {
+        if (window.generatedJson) {
+            const blob = new Blob([window.generatedJson], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'generated-data.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            toast('Файл сохранен', 'success');
+        }
+    });
+}
 // ================== cURL Import ==================
 function parseCurl(cmd) {
-    let c = cmd.replace(/\\r?\n\s*/g, ' ').replace(/\s+/g, ' ').trim(); if (!c.startsWith('curl ')) return null; c = c.substring(5);
+    let c = cmd.replace(/\r?\n\s*/g, ' ').replace(/\s+/g, ' ').trim(); if (!c.startsWith('curl ')) return null; c = c.substring(5);
     const tokens = []; let cur = '', st = 0;
-    for (let i = 0; i < c.length; i++) { const ch = c[i]; if (st === 0) { if (ch === ' ') { if (cur) { tokens.push(cur); cur = ''; } } else if (ch === "'") st = 1; else if (ch === '"') st = 2; else if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else cur += ch; } else if (st === 1) { if (ch === "'") { if (i + 1 < c.length && c[i+1] === "'") { cur += "'"; i++; } else st = 0; } else cur += ch; } else if (st === 2) { if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else if (ch === '"') st = 0; else cur += ch; } }
+    for (let i = 0; i < c.length; i++) { const ch = c[i]; if (st === 0) { if (ch === ' ') { if (cur) { tokens.push(cur); cur = ''; } } else if (ch === "'") st = 1; else if (ch === '"') st = 2; else if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else cur += ch; } else if (st === 1) { if (ch === "'") { if (i + 1 < c.length && c[i + 1] === "'") { cur += "'"; i++; } else st = 0; } else cur += ch; } else if (st === 2) { if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else if (ch === '"') st = 0; else cur += ch; } }
     if (cur) tokens.push(cur);
     const res = { method: 'GET', url: '', headers: {}, body: null, urlEncodedParams: [] };
-    const flags = ['-X','--request','-H','--header','-d','--data','--data-raw','--data-binary','--data-ascii','--data-urlencode','-u','--user','-o','--output','-e','--referer'];
+    const flags = ['-X', '--request', '-H', '--header', '-d', '--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '-u', '--user', '-o', '--output', '-e', '--referer'];
     let i = 0;
-    while (i < tokens.length) { const t = tokens[i]; if (['--location','-L','--compressed','--silent','-s','--insecure','-k','--show-error'].includes(t)) { i++; continue; } if (t === '-X' || t === '--request') { if (i+1 < tokens.length) res.method = tokens[++i].toUpperCase(); i++; continue; } if (t === '-H' || t === '--header') { if (i+1 < tokens.length) { const h = tokens[++i]; const ci = h.indexOf(':'); if (ci > 0) { const k = h.substring(0, ci).trim(); const v = h.substring(ci+1).trim(); if (k) res.headers[k] = v; } } i++; continue; } if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary' || t === '--data-ascii') { if (i+1 < tokens.length) { res.body = tokens[++i]; if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '--data-urlencode') { if (i+1 < tokens.length) { res.urlEncodedParams.push(tokens[++i]); if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '-u' || t === '--user') { if (i+1 < tokens.length) res.headers['Authorization'] = 'Basic ' + btoa(tokens[++i]); i++; continue; } if (flags.includes(t)) { i += 2; continue; } if (!t.startsWith('-') && !res.url) res.url = t; i++; }
+    while (i < tokens.length) { const t = tokens[i]; if (['--location', '-L', '--compressed', '--silent', '-s', '--insecure', '-k', '--show-error'].includes(t)) { i++; continue; } if (t === '-X' || t === '--request') { if (i + 1 < tokens.length) res.method = tokens[++i].toUpperCase(); i++; continue; } if (t === '-H' || t === '--header') { if (i + 1 < tokens.length) { const h = tokens[++i]; const ci = h.indexOf(':'); if (ci > 0) { const k = h.substring(0, ci).trim(); const v = h.substring(ci + 1).trim(); if (k) res.headers[k] = v; } } i++; continue; } if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary' || t === '--data-ascii') { if (i + 1 < tokens.length) { res.body = tokens[++i]; if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '--data-urlencode') { if (i + 1 < tokens.length) { res.urlEncodedParams.push(tokens[++i]); if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '-u' || t === '--user') { if (i + 1 < tokens.length) res.headers['Authorization'] = 'Basic ' + btoa(tokens[++i]); i++; continue; } if (flags.includes(t)) { i += 2; continue; } if (!t.startsWith('-') && !res.url) res.url = t; i++; }
     if (res.urlEncodedParams.length && !res.body) res.body = res.urlEncodedParams.join('&');
     if (res.body && res.method === 'GET') res.method = 'POST';
     return res;
@@ -1086,7 +1457,7 @@ newRootCollectionBtn.addEventListener('click', async () => { const nc = { id: ge
 newFolderBtn.addEventListener('click', async () => { const n = await showInputModal('Название папки', 'Новая папка'); if (n) { data.folders.push({ id: generateUniqueId(), name: n, parentId: null, collapsed: false }); await saveData(); renderTree(); toast('Папка создана', 'success'); } });
 addStepBtn.addEventListener('click', () => { if (!activeCollection) return; activeCollection.steps.push({ name: '', url: '', method: 'GET', contentType: 'application/json', auth: '', body: '', customHeaders: [] }); saveData(); renderSteps(); });
 tabBtns.forEach(b => { b.addEventListener('click', () => { tabBtns.forEach(x => x.classList.remove('active')); b.classList.add('active'); runnerTab.style.display = b.dataset.tab === 'runner' ? 'block' : 'none'; historyTab.style.display = b.dataset.tab === 'history' ? 'block' : 'none'; if (b.dataset.tab === 'history') loadHistory(); }); });
-function readDataFile() { return new Promise((res, rej) => { const f = dataFileInput.files[0]; if (!f) { rej(new Error('Файл не выбран')); return; } const r = new FileReader(); r.onload = e => { try { const it = JSON.parse(e.target.result); if (!Array.isArray(it)) rej(new Error('Ожидается массив')); else res(it); } catch(err) { rej(new Error('Ошибка JSON: ' + err.message)); } }; r.onerror = () => rej(new Error('Ошибка чтения')); r.readAsText(f); }); }
+function readDataFile() { return new Promise((res, rej) => { const f = dataFileInput.files[0]; if (!f) { rej(new Error('Файл не выбран')); return; } const r = new FileReader(); r.onload = e => { try { const it = JSON.parse(e.target.result); if (!Array.isArray(it)) rej(new Error('Ожидается массив')); else res(it); } catch (err) { rej(new Error('Ошибка JSON: ' + err.message)); } }; r.onerror = () => rej(new Error('Ошибка чтения')); r.readAsText(f); }); }
 dataFileInput.addEventListener('change', () => { selectedFileName.textContent = dataFileInput.files.length ? dataFileInput.files[0].name : 'Файл не выбран'; });
 
 // Themes
@@ -1099,42 +1470,29 @@ applyTheme(localStorage.getItem('ab-runner-theme') || 'dark');
 if (themeToggle) themeToggle.addEventListener('click', () => { const cur = localStorage.getItem('ab-runner-theme') || 'dark'; applyTheme(themes[(themes.indexOf(cur) + 1) % themes.length]); });
 
 // Data
-async function loadData() { 
+async function loadData() {
     try {
-        data = await window.api.getData(); 
-        if (!data.folders) data.folders = []; 
-        if (!data.collections) data.collections = []; 
-        if (!data.environments) data.environments = []; 
-        data.folders.forEach(f => { if (f.parentId === undefined) f.parentId = null; if (f.collapsed === undefined) f.collapsed = false; }); 
-        data.collections.forEach(c => { if (c.folderId === undefined) c.folderId = null; if (!c.steps) c.steps = []; }); 
-        console.log('✅ Данные загружены:', {
-            folders: data.folders.length,
-            collections: data.collections.length,
-            environments: data.environments.length
-        });
-        renderTree(); 
-        updateEnvironmentSelector(); 
-        updateHistoryFilter(); 
-        renderRightPanel(); 
+        data = await window.api.getData();
+        if (!data.folders) data.folders = [];
+        if (!data.collections) data.collections = [];
+        if (!data.environments) data.environments = [];
+        data.folders.forEach(f => { if (f.parentId === undefined) f.parentId = null; if (f.collapsed === undefined) f.collapsed = false; });
+        data.collections.forEach(c => { if (c.folderId === undefined) c.folderId = null; if (!c.steps) c.steps = []; if (!c.results) c.results = []; });
+        console.log('✅ Данные загружены:', { folders: data.folders.length, collections: data.collections.length, environments: data.environments.length });
+        renderTree();
+        updateEnvironmentSelector();
+        updateHistoryFilter();
+        renderRightPanel();
     } catch (e) {
         console.error('❌ Ошибка загрузки данных:', e);
         data = { folders: [], collections: [], environments: [] };
         toast('Ошибка загрузки данных', 'error');
     }
 }
-async function saveData() { 
-    console.log('💾 Сохранение данных:', {
-        folders: data.folders?.length,
-        collections: data.collections?.length,
-        environments: data.environments?.length
-    });
-    
-    if (!data.environments) {
-        console.error('⚠️ ВНИМАНИЕ: data.environments отсутствует!');
-        data.environments = [];
-    }
-    
-    await window.api.saveData(data); 
+async function saveData() {
+    console.log('💾 Сохранение данных:', { folders: data.folders?.length, collections: data.collections?.length, environments: data.environments?.length });
+    if (!data.environments) { console.error('⚠️ ВНИМАНИЕ: data.environments отсутствует!'); data.environments = []; }
+    await window.api.saveData(data);
 }
 
 // Shortcuts
@@ -1145,11 +1503,14 @@ document.addEventListener('keydown', async e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); newRootCollectionBtn.click(); }
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
 });
-document.addEventListener('click', e => { if (!e.target.closest('.method-dropdown') && !e.target.closest('.import-dropdown')) { document.querySelectorAll('.method-dropdown.open').forEach(d => d.classList.remove('open')); } });
+document.addEventListener('click', e => { if (!e.target.closest('.method-dropdown') && !e.target.closest('.import-dropdown')) document.querySelectorAll('.method-dropdown.open').forEach(d => d.classList.remove('open')); });
 window.addEventListener('beforeunload', () => { if (activeCollectionId) cleanupEmptyCollection(activeCollectionId); });
 
 // Global Buttons
-const gJson = document.getElementById('globalJsonGeneratorBtn'); const eNew = document.getElementById('emptyStateNewCollectionBtn'); const eJson = document.getElementById('emptyStateJsonGeneratorBtn'); const ePost = document.getElementById('emptyStateImportPostmanBtn');
+const gJson = document.getElementById('globalJsonGeneratorBtn');
+const eNew = document.getElementById('emptyStateNewCollectionBtn');
+const eJson = document.getElementById('emptyStateJsonGeneratorBtn');
+const ePost = document.getElementById('emptyStateImportPostmanBtn');
 if (gJson) gJson.addEventListener('click', () => jsonModal.classList.add('active'));
 if (eNew) eNew.addEventListener('click', () => newRootCollectionBtn.click());
 if (eJson) eJson.addEventListener('click', () => jsonModal.classList.add('active'));
@@ -1165,4 +1526,5 @@ const bodyObs = new MutationObserver(mutations => { mutations.forEach(m => { m.a
 bodyObs.observe(document.body, { childList: true });
 
 // Init
-loadData(); showEmptyState();
+loadData();
+showEmptyState();

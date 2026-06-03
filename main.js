@@ -211,152 +211,200 @@ ipcMain.handle('save-data', async (event, d) => {
   return { success: true };
 });
 
-// ------------------- Запуск коллекции (с таймингами) -------------------
+// ------------------- Запуск коллекции (с поддержкой остановки) -------------------
+let currentRun = null; // Храним контроллер для текущей операции
+
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
   if (!Array.isArray(items)) return { success: false, error: 'Данные должны быть массивом' };
+
+  // Создаем AbortController для отмены запросов
+  const abortController = new AbortController();
+  currentRun = { controller: abortController, cancelled: false };
+
   const env = environment || {};
   let counter = 0;
   const totalRequests = items.length * steps.length;
   const startTime = Date.now();
   const requestTimes = [];
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    for (let j = 0; j < steps.length; j++) {
-      const step = steps[j];
-      const stepName = step.name || `Шаг ${j + 1}`;
-      const currentUrl = replacePlaceholders(step.url, item, env);
-      let requestBody = null;
-      const requestNumber = counter + 1;
-      const requestStartTime = Date.now();
+  try {
+    for (let i = 0; i < items.length; i++) {
+      // Проверяем, не отменили ли выполнение
+      if (currentRun?.cancelled) break;
 
-      try {
-        let data = undefined;
-        if (step.body) {
-          requestBody = stripJsonComments(replacePlaceholders(step.body, item, env, { toJson: true }));
-          if (/json/.test(step.contentType || '')) {
-            try { data = JSON.parse(requestBody); } catch (e) { data = requestBody; }
-          } else {
-            data = requestBody;
+      const item = items[i];
+      for (let j = 0; j < steps.length; j++) {
+        // Проверяем отмену перед каждым запросом
+        if (currentRun?.cancelled) break;
+
+        const step = steps[j];
+        const stepName = step.name || `Шаг ${j + 1}`;
+        const currentUrl = replacePlaceholders(step.url, item, env);
+        let requestBody = null;
+        const requestNumber = counter + 1;
+        const requestStartTime = Date.now();
+
+        try {
+          let data = undefined;
+          if (step.body) {
+            requestBody = stripJsonComments(replacePlaceholders(step.body, item, env, { toJson: true }));
+            if (/json/.test(step.contentType || '')) {
+              try { data = JSON.parse(requestBody); } catch (e) { data = requestBody; }
+            } else {
+              data = requestBody;
+            }
           }
+
+          const headers = buildHeaders(step);
+
+          // Передаем signal в axios для возможности отмены
+          const response = await axios({
+            method: step.method,
+            url: currentUrl,
+            headers,
+            data,
+            signal: abortController.signal,
+            timeout: 30000, // 30 секунд таймаут на запрос
+          });
+
+          counter++;
+          const requestDuration = Date.now() - requestStartTime;
+          requestTimes.push(requestDuration);
+
+          addToHistory({
+            timestamp: new Date().toISOString(),
+            collection: collectionName,
+            type: 'collection',
+            item: JSON.stringify(item),
+            stepName,
+            url: currentUrl,
+            method: step.method,
+            status: response.status,
+            success: true,
+            responseData: response.data,
+            responseHeaders: response.headers,
+            requestBody,
+            requestHeaders: headers,
+          });
+
+          const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
+          const remainingRequests = totalRequests - counter;
+          const etaMs = remainingRequests * avgTime;
+          const elapsedMs = Date.now() - startTime;
+
+          mainWindow.webContents.send('progress', {
+            itemIndex: i, stepIndex: j,
+            item: JSON.stringify(item),
+            stepName,
+            success: true,
+            status: response.status,
+            requestBody,
+            requestNumber,
+            totalRequests,
+            requestDuration,
+            elapsedMs,
+            etaMs,
+            avgRequestTime: Math.round(avgTime),
+            response: {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+              data: response.data,
+              url: currentUrl,
+            },
+          });
+        } catch (e) {
+          // Проверяем, была ли это отмена
+          if (e.name === 'CanceledError' || e.message === 'canceled') {
+            break; // Выходим из цикла без ошибки
+          }
+
+          counter++;
+          const requestDuration = Date.now() - requestStartTime;
+          requestTimes.push(requestDuration);
+
+          const status = e.response ? e.response.status : e.message;
+          addToHistory({
+            timestamp: new Date().toISOString(),
+            collection: collectionName,
+            type: 'collection',
+            item: JSON.stringify(item),
+            stepName,
+            url: currentUrl,
+            method: step.method,
+            status,
+            success: false,
+            error: e.message,
+            responseData: e.response?.data,
+            responseHeaders: e.response?.headers,
+          });
+
+          const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
+          const remainingRequests = totalRequests - counter;
+          const etaMs = remainingRequests * avgTime;
+          const elapsedMs = Date.now() - startTime;
+
+          mainWindow.webContents.send('progress', {
+            itemIndex: i, stepIndex: j,
+            item: JSON.stringify(item),
+            stepName,
+            success: false,
+            status,
+            error: e.message,
+            requestBody: requestBody || null,
+            requestNumber,
+            totalRequests,
+            requestDuration,
+            elapsedMs,
+            etaMs,
+            avgRequestTime: Math.round(avgTime),
+            response: e.response ? {
+              status: e.response.status,
+              statusText: e.response.statusText,
+              headers: e.response.headers,
+              data: e.response.data,
+              url: currentUrl,
+            } : null,
+          });
         }
 
-        const headers = buildHeaders(step);
-        const response = await axios({
-          method: step.method,
-          url: currentUrl,
-          headers,
-          data,
-        });
-
-        counter++;
-        const requestDuration = Date.now() - requestStartTime;
-        requestTimes.push(requestDuration);
-
-        addToHistory({
-          timestamp: new Date().toISOString(),
-          collection: collectionName,
-          type: 'collection',
-          item: JSON.stringify(item),
-          stepName,
-          url: currentUrl,
-          method: step.method,
-          status: response.status,
-          success: true,
-          responseData: response.data,
-          responseHeaders: response.headers,
-          requestBody,
-          requestHeaders: headers,
-        });
-
-        // Рассчитываем ETA
-        const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
-        const remainingRequests = totalRequests - counter;
-        const etaMs = remainingRequests * avgTime;
-        const elapsedMs = Date.now() - startTime;
-
-        mainWindow.webContents.send('progress', {
-          itemIndex: i, stepIndex: j,
-          item: JSON.stringify(item),
-          stepName,
-          success: true,
-          status: response.status,
-          requestBody,
-          requestNumber,
-          totalRequests,
-          requestDuration,
-          elapsedMs,
-          etaMs,
-          avgRequestTime: Math.round(avgTime),
-          response: {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-            data: response.data,
-            url: currentUrl,
-          },
-        });
-      } catch (e) {
-        counter++;
-        const requestDuration = Date.now() - requestStartTime;
-        requestTimes.push(requestDuration);
-
-        const status = e.response ? e.response.status : e.message;
-        addToHistory({
-          timestamp: new Date().toISOString(),
-          collection: collectionName,
-          type: 'collection',
-          item: JSON.stringify(item),
-          stepName,
-          url: currentUrl,
-          method: step.method,
-          status,
-          success: false,
-          error: e.message,
-          responseData: e.response?.data,
-          responseHeaders: e.response?.headers,
-        });
-
-        const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
-        const remainingRequests = totalRequests - counter;
-        const etaMs = remainingRequests * avgTime;
-        const elapsedMs = Date.now() - startTime;
-
-        mainWindow.webContents.send('progress', {
-          itemIndex: i, stepIndex: j,
-          item: JSON.stringify(item),
-          stepName,
-          success: false,
-          status,
-          error: e.message,
-          requestBody: requestBody || null,
-          requestNumber,
-          totalRequests,
-          requestDuration,
-          elapsedMs,
-          etaMs,
-          avgRequestTime: Math.round(avgTime),
-          response: e.response ? {
-            status: e.response.status,
-            statusText: e.response.statusText,
-            headers: e.response.headers,
-            data: e.response.data,
-            url: currentUrl,
-          } : null,
-        });
+        if (delay > 0) {
+          // Проверяем отмену во время задержки
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, delay);
+            abortController.signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new Error('cancelled'));
+            });
+          }).catch(() => { }); // Игнорируем ошибку отмены задержки
+        }
       }
-
-      if (delay > 0) await new Promise(r => setTimeout(r, delay));
     }
+  } finally {
+    // Очищаем текущий запуск
+    currentRun = null;
   }
 
   const totalTime = Date.now() - startTime;
   return {
-    success: true,
+    success: !currentRun?.cancelled,
     totalExecuted: counter,
     totalTime,
-    avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0
+    avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0,
+    cancelled: currentRun?.cancelled || false
   };
+});
+
+// ------------------- Остановка коллекции -------------------
+ipcMain.handle('stop-collection', async () => {
+  if (currentRun?.controller) {
+    currentRun.cancelled = true;
+    currentRun.controller.abort();
+    mainWindow.webContents.send('collection-stopped');
+    currentRun = null;
+    return { success: true };
+  }
+  return { success: false, error: 'Нет активного выполнения' };
 });
 // ------------------- Очистка истории с фильтрами -------------------
 ipcMain.handle('clear-history-filtered', async (event, filters) => {
