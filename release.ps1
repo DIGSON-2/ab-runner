@@ -116,26 +116,36 @@ if (-not $hasGh) {
 Write-Host ""
 Write-Host "[3/3] Creating GitHub release..." -ForegroundColor Yellow
 
-# Формируем список файлов для загрузки
-$filesToUpload = @($exeFile.FullName)
-if ($blockmapFile) {
-    $filesToUpload += $blockmapFile.FullName
-}
-
-# Аргументы для gh release create
+# Базовые аргументы для gh release create
 $releaseArgs = @(
     "release", "create", "v$version",
     "--title", "AB Runner v$version",
     "--generate-notes",
     "--latest"
-) + $filesToUpload
+)
 
+# Добавляем каждый файл ОТДЕЛЬНЫМ аргументом (важно для splatting)
+# Кавычки вокруг пути гарантируют, что пробелы не сломают команду
+$releaseArgs += "$($exeFile.FullName)"
+if ($blockmapFile) {
+    $releaseArgs += "$($blockmapFile.FullName)"
+}
+
+# Запускаем gh с правильным splatting
 & gh @releaseArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] GitHub release creation failed" -ForegroundColor Red
-    Write-Host "       Check if tag v$version exists on GitHub:" -ForegroundColor Gray
-    Write-Host "       https://github.com/DIGSON-2/ab-runner/tags" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "       Попробуйте загрузить файлы вручную:" -ForegroundColor Yellow
+    Write-Host "       gh release upload v$version `"$($exeFile.FullName)`" --clobber" -ForegroundColor Gray
     exit 1
+}
+
+# Проверяем, что latest.yml тоже загрузился
+$latestYml = Get-ChildItem -Path ".\dist" -Filter "latest.yml" -ErrorAction SilentlyContinue
+if ($latestYml) {
+    Write-Host "[UPLOAD] Uploading latest.yml for auto-updates..." -ForegroundColor Cyan
+    gh release upload "v$version" "$($latestYml.FullName)" --clobber
 }
 
 Write-Host ""
