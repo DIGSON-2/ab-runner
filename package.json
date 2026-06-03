@@ -1,6 +1,6 @@
 {
   "name": "final",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -20,8 +20,9 @@
     "url": "https://github.com/DIGSON-2/ab-runner.git"
   },
   "build": {
-    "appId": "com.abrunner.app",
+    "appId": "com.digson.abrunner",
     "productName": "AB Runner",
+    "artifactName": "AB-Runner-Setup-${version}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -31,64 +32,33 @@
       "renderer.html",
       "renderer.js",
       "style.css",
-      "node_modules/codemirror/**/*",
-      "node_modules/axios/**/*",
-      "node_modules/electron-updater/**/*",
-      "node_modules/electron-log/**/*",
-      "node_modules/js-yaml/**/*",
-      "node_modules/lazy-val/**/*",
-      "node_modules/builder-util-runtime/**/*",
-      "node_modules/semver/**/*",
-      "node_modules/async-exit-hook/**/*",
-      "node_modules/argparse/**/*",
-      "node_modules/debug/**/*",
-      "node_modules/ms/**/*",
-      "node_modules/proxy-from-env/**/*",
-      "node_modules/follow-redirects/**/*",
-      "node_modules/form-data/**/*",
-      "node_modules/asynckit/**/*",
-      "node_modules/combined-stream/**/*",
-      "node_modules/delayed-stream/**/*",
-      "node_modules/mime-types/**/*",
-      "node_modules/mime-db/**/*"
+      "package.json",
+      "node_modules/**/*"
     ],
     "win": {
-      "target": [
-        "nsis"
-      ],
-      "signAndEditExecutable": false
+      "target": "nsis",
+      "icon": "assets/icon.ico"
     },
     "mac": {
-      "target": [
-        "dmg"
-      ],
-      "icon": "build/icon.icns",
-      "category": "public.app-category.developer-tools",
-      "hardenedRuntime": false,
-      "gatekeeperAssess": false,
-      "identity": null
+      "target": "dmg",
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.developer-tools"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
-      "icon": "build/icon.png",
+      "icon": "assets/icons",
       "category": "Development"
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "DIGSON-2",
-        "repo": "ab-runner",
-        "releaseType": "draft"
-      }
-    ]
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
+    }
   },
   "keywords": [],
   "license": "ISC",
