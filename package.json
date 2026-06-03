@@ -1,6 +1,6 @@
 {
   "name": "final",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -36,12 +36,10 @@
       "node_modules/**/*"
     ],
     "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
+      "target": "nsis"
     },
     "mac": {
       "target": "dmg",
-      "icon": "assets/icon.icns",
       "category": "public.app-category.developer-tools"
     },
     "linux": {
@@ -49,15 +47,12 @@
         "AppImage",
         "deb"
       ],
-      "icon": "assets/icons",
       "category": "Development"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico"
+      "allowToChangeInstallationDirectory": true
     }
   },
   "keywords": [],
