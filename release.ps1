@@ -79,12 +79,12 @@ if ($LASTEXITCODE -ne 0) {
 
 # Ищем собранные файлы
 $exeFile = Get-ChildItem -Path ".\dist" -Filter "*.exe" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notmatch "blockmap" -and $_.Name -notmatch "uninstaller" } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
+Where-Object { $_.Name -notmatch "blockmap" -and $_.Name -notmatch "uninstaller" } |
+Sort-Object LastWriteTime -Descending |
+Select-Object -First 1
 
 $blockmapFile = Get-ChildItem -Path ".\dist" -Filter "*.blockmap" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+Select-Object -First 1
 
 if (-not $exeFile) {
     Write-Host "[ERROR] .exe not found in dist/" -ForegroundColor Red

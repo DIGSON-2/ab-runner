@@ -122,3 +122,35 @@
    ```bash
    git clone <your-repo-url>
    cd ab-runner
+
+
+
+Братан Разработчик исползуй это если есть проблема с electro 
+# 1. Узнаем нужную версию Electron из package.json
+$electronVersion = (Get-Content node_modules\electron\package.json -Raw | ConvertFrom-Json).version
+Write-Host "Нужна версия: $electronVersion" -ForegroundColor Cyan
+
+# 2. Скачиваем бинарник напрямую (в обход npm postinstall)
+$url = "https://github.com/electron/electron/releases/download/v$electronVersion/electron-v$electronVersion-win32-x64.zip"
+$zipPath = "$env:TEMP\electron-v$electronVersion-win32-x64.zip"
+Write-Host "Скачиваем: $url" -ForegroundColor Yellow
+Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+
+# 3. Распаковываем в правильное место
+$extractPath = "node_modules\electron\dist"
+if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+Write-Host "Распаковываем в $extractPath ..." -ForegroundColor Yellow
+Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+# 4. Создаем path.txt вручную
+Set-Content -Path "node_modules\electron\path.txt" -Value "electron.exe" -NoNewline
+Write-Host "path.txt создан!" -ForegroundColor Green
+
+# 5. Проверяем
+Test-Path "node_modules\electron\path.txt"
+Test-Path "node_modules\electron\dist\electron.exe"
+
+# 6. Запускаем
+npm start
+
+Пожалуйста и удачи тебе))

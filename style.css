@@ -2801,6 +2801,7 @@ body.red-black-theme ::selection {
 .cm-wrapper.theme-dark .CodeMirror-line>span>span::selection {
   background: rgba(108, 99, 255, 0.35) !important;
 }
+
 /* ================== JSON Generator Modal ================== */
 .json-generator-modal {
   width: 700px;
