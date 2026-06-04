@@ -1,6 +1,6 @@
 {
   "name": "ab-runner",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -38,8 +38,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico",
-      "backgroundColor": "#1a1a2e"
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
