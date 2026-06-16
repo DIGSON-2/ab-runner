@@ -116,36 +116,34 @@ if (-not $hasGh) {
 Write-Host ""
 Write-Host "[3/3] Creating GitHub release..." -ForegroundColor Yellow
 
-# Базовые аргументы для gh release create
-$releaseArgs = @(
-    "release", "create", "v$version",
-    "--title", "AB Runner v$version",
-    "--generate-notes",
-    "--latest"
-)
-
-# Добавляем каждый файл ОТДЕЛЬНЫМ аргументом (важно для splatting)
-# Кавычки вокруг пути гарантируют, что пробелы не сломают команду
-$releaseArgs += "$($exeFile.FullName)"
-if ($blockmapFile) {
-    $releaseArgs += "$($blockmapFile.FullName)"
-}
-
-# Запускаем gh с правильным splatting
-& gh @releaseArgs
+# 1. Сначала создаем пустой релиз (без файлов)
+Write-Host "[RELEASE] Creating release v$version..." -ForegroundColor Cyan
+gh release create "v$version" --title "AB Runner v$version" --generate-notes --latest
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] GitHub release creation failed" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "       Попробуйте загрузить файлы вручную:" -ForegroundColor Yellow
-    Write-Host "       gh release upload v$version `"$($exeFile.FullName)`" --clobber" -ForegroundColor Gray
+    Write-Host "[ERROR] Failed to create release" -ForegroundColor Red
     exit 1
 }
 
-# Проверяем, что latest.yml тоже загрузился
+# 2. Загружаем файлы по одному (надежнее для больших .exe)
+Write-Host "[UPLOAD] Uploading .exe ($sizeMB MB)..." -ForegroundColor Cyan
+gh release upload "v$version" "$($exeFile.FullName)" --clobber
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[WARN] .exe upload failed, try manually:" -ForegroundColor Yellow
+}
+
+if ($blockmapFile) {
+    Write-Host "[UPLOAD] Uploading .blockmap..." -ForegroundColor Cyan
+    gh release upload "v$version" "$($blockmapFile.FullName)" --clobber
+}
+
+# 3. Загружаем latest.yml (критично для автообновлений!)
 $latestYml = Get-ChildItem -Path ".\dist" -Filter "latest.yml" -ErrorAction SilentlyContinue
 if ($latestYml) {
-    Write-Host "[UPLOAD] Uploading latest.yml for auto-updates..." -ForegroundColor Cyan
+    Write-Host "[UPLOAD] Uploading latest.yml (for auto-updates)..." -ForegroundColor Cyan
     gh release upload "v$version" "$($latestYml.FullName)" --clobber
+}
+else {
+    Write-Host "[WARN] latest.yml not found! Auto-updates won't work." -ForegroundColor Yellow
 }
 
 Write-Host ""
