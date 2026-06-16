@@ -1,4 +1,22 @@
+// Performance Monitor
+const perf = {
+    measure(name, fn) {
+        const start = performance.now();
+        const result = fn();
+        const duration = performance.now() - start;
+        console.log(`⏱️ ${name}: ${duration.toFixed(2)}ms`);
+        return result;
+    },
+    start(name) {
+        this[`_start_${name}`] = performance.now();
+    },
+    end(name) {
+        const duration = performance.now() - this[`_start_${name}`];
+        console.log(`⏱️ ${name}: ${duration.toFixed(2)}ms`);
+    }
+};
 // renderer.js – полная исправленная версия
+window.perf = perf;
 let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
 let activeCollection = null;
@@ -9,6 +27,8 @@ let fullHistory = [];
 let sidebarWidth = 260;
 let generatedJsonString = '';
 let isRunning = false;
+const stepCardsCache = new Map();
+let lastRenderedCollectionId = null;
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
@@ -112,7 +132,7 @@ const importFolderBtn = document.getElementById('importFolderBtn');
 // ================== CodeMirror ==================
 const activeEditors = new Map();
 
-function createCodeMirrorEditor(textarea, initialValue = '') {
+function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript') {
     const wrapper = document.createElement('div');
     wrapper.className = 'cm-wrapper';
     if (typeof CodeMirror === 'undefined') {
@@ -123,7 +143,7 @@ function createCodeMirrorEditor(textarea, initialValue = '') {
     const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
     const editor = CodeMirror(wrapper, {
         value: initialValue,
-        mode: 'javascript',
+        mode: mode,
         theme: 'default',
         lineNumbers: true,
         lineWrapping: true,
@@ -350,10 +370,35 @@ function formatJSON(text) {
 function formatCurrentEditor(editorId) {
     const info = activeEditors.get(editorId);
     if (!info || !info.editor) { toast('Редактор не найден', 'error'); return; }
+
     const text = info.editor.getValue();
     if (!text.trim()) { toast('Нечего форматировать', 'warning'); return; }
-    try { info.editor.setValue(formatJSON(text)); toast('JSON отформатирован', 'success'); }
-    catch (e) { toast('Ошибка форматирования: ' + e.message, 'error'); }
+
+    try {
+        const formatted = formatJSON(text);
+
+        // Проверяем, что форматтер не сломал данные
+        if (!formatted || formatted.trim().length === 0) {
+            toast('Форматирование вернуло пустой результат', 'error');
+            return;
+        }
+
+        info.editor.setValue(formatted);
+
+        // Сохраняем в step.body
+        const step = activeCollection?.steps?.find((_, i) => {
+            const eid = 'cm-raw-' + i;
+            return editorId.startsWith(eid);
+        });
+        if (step) {
+            step.body = formatted;
+            debouncedSave();
+        }
+
+        toast('JSON отформатирован', 'success');
+    } catch (e) {
+        toast('Ошибка форматирования: ' + e.message, 'error');
+    }
 }
 
 // ================== Utilities ==================
@@ -391,8 +436,58 @@ function showInputModal(title, def) {
     });
 }
 
-const debouncedSave = debounce(async () => { try { await saveData(); } catch (e) { toast('Ошибка сохранения: ' + e.message, 'error'); } }, 500);
 
+
+// ================== Умное сохранение ==================
+let saveTimeout = null;
+let saveScheduled = false;
+let lastSavedJson = ''; // Для проверки реальных изменений
+
+const debouncedSave = () => {
+    // Если уже запланировано сохранение — не дублируем
+    if (saveScheduled) return;
+    saveScheduled = true;
+    
+    // Используем requestIdleCallback — сохраняем когда браузер свободен
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(doSave, { timeout: 2000 });
+    } else {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(doSave, 800);
+    }
+};
+
+const doSave = async () => {
+    try {
+        // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Проверяем, изменились ли данные
+        const currentJson = JSON.stringify(data);
+        if (currentJson === lastSavedJson) {
+            // Данные не изменились — ничего не сохраняем
+            saveScheduled = false;
+            return;
+        }
+        
+        await saveData();
+        lastSavedJson = currentJson;
+    } catch (e) {
+        console.error('Save error:', e);
+        toast('Ошибка сохранения: ' + e.message, 'error');
+    } finally {
+        saveScheduled = false;
+    }
+};
+
+// Принудительное сохранение (для важных действий)
+const forceSave = async () => {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveScheduled = false;
+    try {
+        await saveData();
+        lastSavedJson = JSON.stringify(data);
+    } catch (e) {
+        toast('Ошибка сохранения: ' + e.message, 'error');
+    }
+};
 // ================== Sidebar & Resize ==================
 let isResizing = false, startX, startWidth;
 resizer.addEventListener('mousedown', e => { if (sidebar.style.display === 'none') return; isResizing = true; startX = e.clientX; startWidth = sidebar.offsetWidth; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; });
@@ -778,9 +873,28 @@ function renderFolderChildren(folderId, container, level) {
         container.append(div, child);
         renderFolderContents(folder.id, child, level + 1);
         div.addEventListener('click', e => {
-            if (e.target.classList.contains('delete-folder-btn') || e.target.classList.contains('folder-add-collection-btn')) return;
+            if (e.target.classList.contains('delete-folder-btn') ||
+                e.target.classList.contains('folder-add-collection-btn')) return;
+
+            // При поиске не трогаем папки
             if (searchQuery && searchExpandedFolders.has(folder.id)) return;
-            folder.collapsed = !folder.collapsed; saveData().then(() => renderTree());
+
+            // ОПТИМИЗАЦИЯ: toggle БЕЗ ререндера всего дерева
+            folder.collapsed = !folder.collapsed;
+
+            // Toggle классов напрямую (быстро)
+            div.classList.toggle('collapsed', folder.collapsed);
+            const childEl = div.nextElementSibling; // folder-children
+            if (childEl && childEl.classList.contains('folder-children')) {
+                childEl.classList.toggle('collapsed', folder.collapsed);
+            }
+
+            // Сохраняем в фоне через requestIdleCallback
+            if ('requestIdleCallback' in window) {
+                requestIdleCallback(() => saveData());
+            } else {
+                setTimeout(() => saveData(), 100);
+            }
         });
         div.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', 'folder:' + folder.id); e.dataTransfer.effectAllowed = 'move'; div.classList.add('dragging'); });
         div.addEventListener('dragend', () => div.classList.remove('dragging'));
@@ -815,6 +929,7 @@ function isDescendant(fid, anc) { const f = data.folders.find(x => x.id === fid)
 function renderFolderContents(fid, c, l) { renderFolderChildren(fid, c, l); }
 let treeListeners = false;
 function renderTree() {
+    perf.start('renderTree');
     prepareSearchState();
     treeContainer.innerHTML = '';
     if (searchQuery) {
@@ -835,6 +950,7 @@ function renderTree() {
             }
         });
     }
+    perf.end('renderTree');
 }
 function renderSearchResults() {
     const allCollections = data.collections || [];
@@ -957,51 +1073,949 @@ function generateUniqueId() { let id = Date.now().toString(); while (data.collec
 
 // ================== Steps ==================
 function renderSteps() {
-    destroyAllEditors(); stepsContainer.innerHTML = ''; if (!activeCollection.steps) activeCollection.steps = [];
-    activeCollection.steps.forEach((s, i) => stepsContainer.appendChild(createStepCard(s, i)));
-    requestAnimationFrame(() => activeEditors.forEach(({ editor }) => { if (editor) editor.refresh(); }));
+    perf.start('renderSteps');
+    // Если коллекция та же — ничего не делаем
+    if (lastRenderedCollectionId === activeCollection?.id && stepsContainer.children.length > 0) {
+        return;
+    }
+
+    // Если коллекция изменилась — сохраняем состояние старых редакторов
+    if (lastRenderedCollectionId && lastRenderedCollectionId !== activeCollection?.id) {
+        activeEditors.forEach((info, id) => {
+            if (info.editor) {
+                try { info.editor.toTextArea(); } catch (e) { }
+            }
+        });
+        activeEditors.clear();
+        stepCardsCache.clear();
+    }
+
+    stepsContainer.innerHTML = '';
+    if (!activeCollection) return;
+    if (!activeCollection.steps) activeCollection.steps = [];
+
+    // Используем DocumentFragment для батч-вставки (быстрее)
+    const fragment = document.createDocumentFragment();
+    activeCollection.steps.forEach((s, i) => {
+        fragment.appendChild(createStepCard(s, i));
+    });
+    stepsContainer.appendChild(fragment);
+
+    lastRenderedCollectionId = activeCollection.id;
+
+    // Refresh всех редакторов одним батчем
+    requestAnimationFrame(() => {
+        activeEditors.forEach(({ editor }) => {
+            if (editor) editor.refresh();
+        });
+    });
+    perf.end('renderSteps');
 }
 function createStepCard(step, idx) {
-    const card = document.createElement('div'); card.className = 'step-card'; card.dataset.index = idx;
-    const hdr = document.createElement('div'); hdr.className = 'step-header';
+    const card = document.createElement('div');
+    card.className = 'step-card';
+    card.dataset.index = idx;
+
+    // ================== Header ==================
+    const hdr = document.createElement('div');
+    hdr.className = 'step-header';
     const nm = txt('span', step.name || `Шаг ${idx + 1}`, 'step-name');
-    const acts = document.createElement('div'); acts.className = 'step-actions';
-    const sendB = document.createElement('button'); sendB.className = 'send-btn'; sendB.textContent = '▶ Send'; sendB.onclick = () => openSendModal(step);
-    const curlB = document.createElement('button'); curlB.className = 'curl-import-btn'; curlB.textContent = '📋 cURL'; curlB.title = 'Импорт cURL'; curlB.onclick = () => importStepFromCurl(step, idx);
-    const delB = document.createElement('button'); delB.className = 'danger'; delB.style.cssText = 'padding:2px 8px;font-size:12px;'; delB.textContent = 'Удалить';
-    delB.onclick = async () => { if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) { activeCollection.steps.splice(idx, 1); saveData(); renderSteps(); toast('Шаг удалён', 'success'); } };
-    acts.append(sendB, curlB, delB); hdr.append(nm, acts); card.appendChild(hdr);
-    const nf = document.createElement('div'); nf.className = 'field'; nf.appendChild(txt('label', 'Название шага'));
-    const ni = document.createElement('input'); ni.type = 'text'; ni.className = 'step-name-input'; ni.value = step.name || ''; ni.placeholder = 'Например: Логин'; nf.appendChild(ni); card.appendChild(nf);
-    const umr = document.createElement('div'); umr.className = 'url-method-row';
-    const mf = document.createElement('div'); mf.className = 'field'; mf.appendChild(txt('label', 'Метод'));
-    const md = document.createElement('div'); md.className = 'method-dropdown'; md.dataset.method = step.method || 'GET';
-    const ms = document.createElement('div'); ms.className = 'method-selected'; ms.textContent = step.method || 'GET';
-    const mo = document.createElement('div'); mo.className = 'method-options';
-    ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => { const o = document.createElement('div'); o.className = 'method-option'; o.dataset.method = m; o.textContent = m; if (m === step.method) o.classList.add('selected'); o.onclick = () => { ms.textContent = m; md.dataset.method = m; mo.querySelectorAll('.method-option').forEach(x => x.classList.remove('selected')); o.classList.add('selected'); md.classList.remove('open'); md.dispatchEvent(new Event('input', { bubbles: true })); }; mo.appendChild(o); });
-    ms.onclick = e => { e.stopPropagation(); document.querySelectorAll('.method-dropdown.open').forEach(d => { if (d !== md) d.classList.remove('open'); }); md.classList.toggle('open'); };
-    md.append(ms, mo); Object.defineProperty(md, 'value', { get: () => md.dataset.method }); mf.appendChild(md); umr.appendChild(mf);
-    const uf = document.createElement('div'); uf.className = 'field'; uf.appendChild(txt('label', 'URL'));
-    const ui = document.createElement('input'); ui.type = 'text'; ui.className = 'step-url'; ui.value = step.url || ''; ui.placeholder = 'http://api.example.com/{{id}}'; uf.appendChild(ui); umr.appendChild(uf); card.appendChild(umr);
-    const tc = document.createElement('div'); tc.className = 'step-tabs';
+    const acts = document.createElement('div');
+    acts.className = 'step-actions';
+
+    const sendB = document.createElement('button');
+    sendB.className = 'send-btn';
+    sendB.textContent = '▶ Send';
+    sendB.onclick = () => openSendModal(step);
+
+    const curlB = document.createElement('button');
+    curlB.className = 'curl-import-btn';
+    curlB.textContent = '📋 cURL';
+    curlB.title = 'Импорт cURL';
+    curlB.onclick = () => importStepFromCurl(step, idx);
+
+    const delB = document.createElement('button');
+    delB.className = 'danger';
+    delB.style.cssText = 'padding:2px 8px;font-size:12px;';
+    delB.textContent = 'Удалить';
+    delB.onclick = async () => {
+        if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) {
+            activeCollection.steps.splice(idx, 1);
+            saveData();
+            renderSteps();
+            toast('Шаг удалён', 'success');
+        }
+    };
+
+    acts.append(sendB, curlB, delB);
+    hdr.append(nm, acts);
+    card.appendChild(hdr);
+
+    // ================== Name ==================
+    const nf = document.createElement('div');
+    nf.className = 'field';
+    nf.appendChild(txt('label', 'Название шага'));
+    const ni = document.createElement('input');
+    ni.type = 'text';
+    ni.className = 'step-name-input';
+    ni.value = step.name || '';
+    ni.placeholder = 'Например: Логин';
+    nf.appendChild(ni);
+    card.appendChild(nf);
+
+    // ================== URL + Method ==================
+    const umr = document.createElement('div');
+    umr.className = 'url-method-row';
+
+    const mf = document.createElement('div');
+    mf.className = 'field';
+    mf.appendChild(txt('label', 'Метод'));
+    const md = document.createElement('div');
+    md.className = 'method-dropdown';
+    md.dataset.method = step.method || 'GET';
+    const ms = document.createElement('div');
+    ms.className = 'method-selected';
+    ms.textContent = step.method || 'GET';
+    const mo = document.createElement('div');
+    mo.className = 'method-options';
+    ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].forEach(m => {
+        const o = document.createElement('div');
+        o.className = 'method-option';
+        o.dataset.method = m;
+        o.textContent = m;
+        if (m === step.method) o.classList.add('selected');
+        o.onclick = () => {
+            ms.textContent = m;
+            md.dataset.method = m;
+            mo.querySelectorAll('.method-option').forEach(x => x.classList.remove('selected'));
+            o.classList.add('selected');
+            md.classList.remove('open');
+            md.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        mo.appendChild(o);
+    });
+    ms.onclick = e => {
+        e.stopPropagation();
+        document.querySelectorAll('.method-dropdown.open').forEach(d => {
+            if (d !== md) d.classList.remove('open');
+        });
+        md.classList.toggle('open');
+    };
+    md.append(ms, mo);
+    Object.defineProperty(md, 'value', { get: () => md.dataset.method });
+    mf.appendChild(md);
+    umr.appendChild(mf);
+
+    const uf = document.createElement('div');
+    uf.className = 'field';
+    uf.appendChild(txt('label', 'URL'));
+    const ui = document.createElement('input');
+    ui.type = 'text';
+    ui.className = 'step-url';
+    ui.value = step.url || '';
+    ui.placeholder = 'http://api.example.com/{{id}}';
+    uf.appendChild(ui);
+    umr.appendChild(uf);
+    card.appendChild(umr);
+
+    // ================== Tabs ==================
+    const tc = document.createElement('div');
+    tc.className = 'step-tabs';
     const tb = {}, tbc = {};
-    const crt = (id, lbl) => { const b = document.createElement('button'); b.className = 'step-tab-btn'; b.textContent = lbl; b.dataset.tab = id; const c = document.createElement('div'); c.className = 'step-tab-content'; c.dataset.tab = id; tb[id] = b; tbc[id] = c; tc.appendChild(b); return { b, c }; };
-    crt('headers', 'Headers'); crt('auth', 'Authorization'); crt('body', 'Body');
+    const crt = (id, lbl) => {
+        const b = document.createElement('button');
+        b.className = 'step-tab-btn';
+        b.textContent = lbl;
+        b.dataset.tab = id;
+        const c = document.createElement('div');
+        c.className = 'step-tab-content';
+        c.dataset.tab = id;
+        tb[id] = b;
+        tbc[id] = c;
+        tc.appendChild(b);
+        return { b, c };
+    };
+    crt('headers', 'Headers');
+    crt('auth', 'Authorization');
+    crt('body', 'Body');
     card.appendChild(tc);
-    Object.keys(tb).forEach(id => { tb[id].onclick = () => { Object.values(tb).forEach(x => x.classList.remove('active')); Object.values(tbc).forEach(x => x.classList.remove('active')); tb[id].classList.add('active'); tbc[id].classList.add('active'); if (id === 'body') requestAnimationFrame(() => activeEditors.forEach(({ editor }) => { if (editor) editor.refresh(); })); }; });
-    tb.headers.classList.add('active'); tbc.headers.classList.add('active');
-    let hArr = step.customHeaders; if (!Array.isArray(hArr)) hArr = (hArr && typeof hArr === 'object') ? Object.entries(hArr).map(([k, v]) => ({ key: k, value: String(v), enabled: true })) : []; step.customHeaders = hArr;
-    const ht = document.createElement('table'); ht.className = 'headers-table'; ht.innerHTML = `<thead><tr><th class="header-enabled"></th><th class="header-key">Ключ</th><th class="header-value">Значение</th><th class="header-actions"></th></tr></thead>`;
-    const tbody = document.createElement('tbody'); ht.appendChild(tbody);
-    const dlId = 'hl-' + idx + '-' + Date.now(); const dl = document.createElement('datalist'); dl.id = dlId;['Content-Type', 'Accept', 'Authorization', 'X-API-Key', 'User-Agent', 'Cache-Control', 'X-Request-ID'].forEach(h => { const o = document.createElement('option'); o.value = h; dl.appendChild(o); }); tbc.headers.appendChild(dl);
-    const renderHR = (hd, i) => { const tr = document.createElement('tr'); tr.className = 'header-row' + (hd.enabled ? '' : ' disabled'); const tdE = document.createElement('td'); tdE.className = 'header-enabled'; const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = hd.enabled !== false; cb.onchange = () => { hd.enabled = cb.checked; tr.classList.toggle('disabled', !cb.checked); debouncedSave(); }; tdE.appendChild(cb); tr.appendChild(tdE); const tdK = document.createElement('td'); tdK.className = 'header-key'; const ki = document.createElement('input'); ki.type = 'text'; ki.setAttribute('list', dlId); ki.value = hd.key || ''; ki.placeholder = 'Название'; ki.autocomplete = 'off'; ki.oninput = () => { hd.key = ki.value.trim(); debouncedSave(); }; tdK.appendChild(ki); tr.appendChild(tdK); const tdV = document.createElement('td'); tdV.className = 'header-value'; const vi = document.createElement('input'); vi.type = 'text'; vi.value = hd.value || ''; vi.placeholder = 'Значение'; vi.oninput = () => { hd.value = vi.value; debouncedSave(); }; tdV.appendChild(vi); tr.appendChild(tdV); const tdA = document.createElement('td'); tdA.className = 'header-actions'; const rm = document.createElement('button'); rm.className = 'header-remove-btn'; rm.textContent = '✕'; rm.title = 'Удалить'; rm.onclick = () => { step.customHeaders.splice(i, 1); tr.style.opacity = '0'; tr.style.transform = 'translateX(10px)'; tr.style.transition = 'all 0.2s'; setTimeout(() => { tr.remove(); debouncedSave(); }, 180); }; tdA.appendChild(rm); tr.appendChild(tdA); tbody.appendChild(tr); };
+
+    Object.keys(tb).forEach(id => {
+        tb[id].onclick = () => {
+            Object.values(tb).forEach(x => x.classList.remove('active'));
+            Object.values(tbc).forEach(x => x.classList.remove('active'));
+            tb[id].classList.add('active');
+            tbc[id].classList.add('active');
+            if (id === 'body') {
+                requestAnimationFrame(() => {
+                    activeEditors.forEach(({ editor }) => { if (editor) editor.refresh(); });
+                });
+            }
+        };
+    });
+    tb.headers.classList.add('active');
+    tbc.headers.classList.add('active');
+
+    // ================== Headers Tab ==================
+    let hArr = step.customHeaders;
+    if (!Array.isArray(hArr)) {
+        hArr = (hArr && typeof hArr === 'object')
+            ? Object.entries(hArr).map(([k, v]) => ({ key: k, value: String(v), enabled: true }))
+            : [];
+    }
+    step.customHeaders = hArr;
+
+    const ht = document.createElement('table');
+    ht.className = 'headers-table';
+    ht.innerHTML = `<thead><tr><th class="header-enabled"></th><th class="header-key">Ключ</th><th class="header-value">Значение</th><th class="header-actions"></th></tr></thead>`;
+    const tbody = document.createElement('tbody');
+    ht.appendChild(tbody);
+
+    const dlId = 'hl-' + idx + '-' + Date.now();
+    const dl = document.createElement('datalist');
+    dl.id = dlId;
+    ['Content-Type', 'Accept', 'Authorization', 'X-API-Key', 'User-Agent', 'Cache-Control', 'X-Request-ID'].forEach(h => {
+        const o = document.createElement('option');
+        o.value = h;
+        dl.appendChild(o);
+    });
+    tbc.headers.appendChild(dl);
+
+    const renderHR = (hd, i) => {
+        const tr = document.createElement('tr');
+        tr.className = 'header-row' + (hd.enabled ? '' : ' disabled');
+
+        const tdE = document.createElement('td');
+        tdE.className = 'header-enabled';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = hd.enabled !== false;
+        cb.onchange = () => {
+            hd.enabled = cb.checked;
+            tr.classList.toggle('disabled', !cb.checked);
+            debouncedSave();
+        };
+        tdE.appendChild(cb);
+        tr.appendChild(tdE);
+
+        const tdK = document.createElement('td');
+        tdK.className = 'header-key';
+        const ki = document.createElement('input');
+        ki.type = 'text';
+        ki.setAttribute('list', dlId);
+        ki.value = hd.key || '';
+        ki.placeholder = 'Название';
+        ki.autocomplete = 'off';
+        ki.oninput = () => { hd.key = ki.value.trim(); debouncedSave(); };
+        tdK.appendChild(ki);
+        tr.appendChild(tdK);
+
+        const tdV = document.createElement('td');
+        tdV.className = 'header-value';
+        const vi = document.createElement('input');
+        vi.type = 'text';
+        vi.value = hd.value || '';
+        vi.placeholder = 'Значение';
+        vi.oninput = () => { hd.value = vi.value; debouncedSave(); };
+        tdV.appendChild(vi);
+        tr.appendChild(tdV);
+
+        const tdA = document.createElement('td');
+        tdA.className = 'header-actions';
+        const rm = document.createElement('button');
+        rm.className = 'header-remove-btn';
+        rm.textContent = '✕';
+        rm.title = 'Удалить';
+        rm.onclick = () => {
+            step.customHeaders.splice(i, 1);
+            tr.style.opacity = '0';
+            tr.style.transform = 'translateX(10px)';
+            tr.style.transition = 'all 0.2s';
+            setTimeout(() => { tr.remove(); debouncedSave(); }, 180);
+        };
+        tdA.appendChild(rm);
+        tr.appendChild(tdA);
+        tbody.appendChild(tr);
+    };
+
     step.customHeaders.forEach((h, i) => renderHR(h, i));
-    const addH = document.createElement('button'); addH.className = 'add-header-btn'; addH.textContent = 'Добавить заголовок'; addH.onclick = () => { const nh = { key: '', value: '', enabled: true }; step.customHeaders.push(nh); renderHR(nh, step.customHeaders.length - 1); debouncedSave(); }; tbc.headers.append(ht, addH);
-    const af = document.createElement('div'); af.className = 'field'; af.appendChild(txt('label', 'Authorization')); const ai = document.createElement('input'); ai.type = 'text'; ai.className = 'step-auth'; ai.value = step.auth || ''; ai.placeholder = 'Bearer токен'; af.appendChild(ai); tbc.auth.appendChild(af);
-    const bf = document.createElement('div'); bf.className = 'field'; const blr = document.createElement('div'); blr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'; blr.appendChild(txt('label', 'Тело запроса (JSON, Ctrl+/ для комментариев)')); const fmtB = document.createElement('button'); fmtB.className = 'secondary'; fmtB.style.cssText = 'padding:2px 10px;font-size:12px;'; fmtB.textContent = '🎨 Форматировать'; blr.appendChild(fmtB); const bta = document.createElement('textarea'); bta.className = 'step-body'; bta.value = step.body || ''; const eId = 'cm-' + idx + '-' + Date.now(); const { wrapper: cw, editor: ce } = createCodeMirrorEditor(bta, step.body || ''); activeEditors.set(eId, { editor: ce, wrapper: cw }); fmtB.onclick = e => { e.stopPropagation(); formatCurrentEditor(eId); }; bf.append(blr, cw); tbc.body.appendChild(bf);
+
+    const addH = document.createElement('button');
+    addH.className = 'add-header-btn';
+    addH.textContent = 'Добавить заголовок';
+    addH.onclick = () => {
+        const nh = { key: '', value: '', enabled: true };
+        step.customHeaders.push(nh);
+        renderHR(nh, step.customHeaders.length - 1);
+        debouncedSave();
+    };
+    tbc.headers.append(ht, addH);
+
+    // ================== Authorization Tab ==================
+    const authContainer = document.createElement('div');
+    authContainer.className = 'auth-container';
+
+    const authTypeRow = document.createElement('div');
+    authTypeRow.className = 'auth-type-row';
+    authTypeRow.appendChild(txt('label', 'Тип аутентификации'));
+
+    const authTypeSelect = document.createElement('select');
+    authTypeSelect.className = 'auth-type-select';
+    const authTypes = [
+        { value: 'noauth', label: 'No Auth' },
+        { value: 'apikey', label: 'API Key' },
+        { value: 'bearer', label: 'Bearer Token' },
+        { value: 'jwt', label: 'JWT Bearer' },
+        { value: 'basic', label: 'Basic Auth' },
+        { value: 'digest', label: 'Digest Auth' },
+        { value: 'oauth2', label: 'OAuth 2.0' },
+        { value: 'oauth1', label: 'OAuth 1.0' },
+        { value: 'hawk', label: 'Hawk Authentication' }
+    ];
+    authTypes.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.value;
+        opt.textContent = t.label;
+        authTypeSelect.appendChild(opt);
+    });
+
+    // Миграция старых данных
+    if (!step.authData) step.authData = {};
+    if (!step.authType) {
+        step.authType = (step.auth && step.auth.trim()) ? 'bearer' : 'noauth';
+        if (step.authType === 'bearer') {
+            step.authData.token = step.auth.trim();
+        }
+    }
+    authTypeSelect.value = step.authType;
+    authTypeRow.appendChild(authTypeSelect);
+    authContainer.appendChild(authTypeRow);
+
+    const authFormContainer = document.createElement('div');
+    authFormContainer.className = 'auth-form-container';
+    authContainer.appendChild(authFormContainer);
+
+    const createAuthField = (label, key, placeholder = '', type = 'text', isPassword = false) => {
+        const field = document.createElement('div');
+        field.className = 'auth-field';
+        field.appendChild(txt('label', label));
+        const input = document.createElement('input');
+        input.type = isPassword ? 'password' : type;
+        input.value = step.authData[key] || '';
+        input.placeholder = placeholder;
+        input.addEventListener('input', () => {
+            step.authData[key] = input.value;
+            debouncedSave();
+        });
+        field.appendChild(input);
+        return field;
+    };
+
+    const createAuthSelect = (label, key, options, defaultValue) => {
+        const field = document.createElement('div');
+        field.className = 'auth-field';
+        field.appendChild(txt('label', label));
+        const select = document.createElement('select');
+        options.forEach(opt => {
+            const o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            select.appendChild(o);
+        });
+        select.value = step.authData[key] || defaultValue;
+        select.addEventListener('change', () => {
+            step.authData[key] = select.value;
+            debouncedSave();
+        });
+        field.appendChild(select);
+        return field;
+    };
+
+    const renderAuthForm = () => {
+        authFormContainer.innerHTML = '';
+        const type = authTypeSelect.value;
+        step.authType = type;
+
+        switch (type) {
+            case 'noauth': {
+                const msg = document.createElement('div');
+                msg.className = 'auth-info-msg';
+                msg.innerHTML = 'ℹ️ Этот запрос не будет использовать аутентификацию.';
+                authFormContainer.appendChild(msg);
+                break;
+            }
+            case 'apikey':
+                authFormContainer.appendChild(createAuthField('Key', 'key', 'api-key'));
+                authFormContainer.appendChild(createAuthField('Value', 'value', 'your-api-key-value'));
+                authFormContainer.appendChild(createAuthSelect('Add to', 'addTo', [
+                    { value: 'header', label: 'Header' },
+                    { value: 'query', label: 'Query Params' }
+                ], 'header'));
+                break;
+            case 'bearer':
+                authFormContainer.appendChild(createAuthField('Token', 'token', 'Enter bearer token'));
+                const bearerHint = document.createElement('div');
+                bearerHint.className = 'auth-hint';
+                bearerHint.textContent = 'Будет отправлен как: Authorization: Bearer <token>';
+                authFormContainer.appendChild(bearerHint);
+                break;
+            case 'jwt':
+                authFormContainer.appendChild(createAuthField('Token', 'token', 'Enter JWT token'));
+                authFormContainer.appendChild(createAuthField('Header Prefix', 'prefix', 'Bearer'));
+                const jwtHint = document.createElement('div');
+                jwtHint.className = 'auth-hint';
+                jwtHint.textContent = 'Отправится как: Authorization: <prefix> <token>';
+                authFormContainer.appendChild(jwtHint);
+                break;
+            case 'basic':
+                authFormContainer.appendChild(createAuthField('Username', 'username', 'Enter username'));
+                authFormContainer.appendChild(createAuthField('Password', 'password', 'Enter password', 'text', true));
+                const basicHint = document.createElement('div');
+                basicHint.className = 'auth-hint';
+                basicHint.textContent = 'Credentials будут закодированы в Base64.';
+                authFormContainer.appendChild(basicHint);
+                break;
+            case 'digest':
+                authFormContainer.appendChild(createAuthField('Username', 'username', 'Enter username'));
+                authFormContainer.appendChild(createAuthField('Password', 'password', 'Enter password', 'text', true));
+                authFormContainer.appendChild(createAuthField('Realm', 'realm', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Nonce', 'nonce', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Algorithm', 'algorithm', 'MD5'));
+                authFormContainer.appendChild(createAuthField('qop', 'qop', 'auth'));
+                authFormContainer.appendChild(createAuthField('Nonce Count', 'nonceCount', '00000001'));
+                authFormContainer.appendChild(createAuthField('Client Nonce (cnonce)', 'cnonce', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Opaque', 'opaque', '(optional)'));
+                const digestInfo = document.createElement('div');
+                digestInfo.className = 'auth-info-msg';
+                digestInfo.textContent = '⚠️ Digest Auth требует двусторонний обмен. Если сервер возвращает 401 с WWW-Authenticate, приложение автоматически вычислит ответ.';
+                authFormContainer.appendChild(digestInfo);
+                break;
+            case 'oauth2':
+                authFormContainer.appendChild(createAuthField('Access Token', 'accessToken', 'Enter access token'));
+                authFormContainer.appendChild(createAuthField('Header Prefix', 'headerPrefix', 'Bearer'));
+                authFormContainer.appendChild(createAuthSelect('Add to', 'addTo', [
+                    { value: 'header', label: 'Header' },
+                    { value: 'query', label: 'Query Params' }
+                ], 'header'));
+                break;
+            case 'oauth1':
+                authFormContainer.appendChild(createAuthField('Consumer Key', 'consumerKey', 'Enter consumer key'));
+                authFormContainer.appendChild(createAuthField('Consumer Secret', 'consumerSecret', 'Enter consumer secret', 'text', true));
+                authFormContainer.appendChild(createAuthField('Access Token', 'token', 'Enter access token'));
+                authFormContainer.appendChild(createAuthField('Token Secret', 'tokenSecret', 'Enter token secret', 'text', true));
+                authFormContainer.appendChild(createAuthSelect('Signature Method', 'signatureMethod', [
+                    { value: 'HMAC-SHA1', label: 'HMAC-SHA1' },
+                    { value: 'HMAC-SHA256', label: 'HMAC-SHA256' },
+                    { value: 'RSA-SHA1', label: 'RSA-SHA1' },
+                    { value: 'PLAINTEXT', label: 'PLAINTEXT' }
+                ], 'HMAC-SHA1'));
+                authFormContainer.appendChild(createAuthField('Timestamp', 'timestamp', '(auto-generated if empty)'));
+                authFormContainer.appendChild(createAuthField('Nonce', 'nonce', '(auto-generated if empty)'));
+                authFormContainer.appendChild(createAuthField('Version', 'version', '1.0'));
+                authFormContainer.appendChild(createAuthField('Realm', 'realm', '(optional)'));
+                authFormContainer.appendChild(createAuthSelect('Add to', 'addTo', [
+                    { value: 'header', label: 'Header' },
+                    { value: 'query', label: 'Query Params' }
+                ], 'header'));
+                const oauth1Info = document.createElement('div');
+                oauth1Info.className = 'auth-info-msg';
+                oauth1Info.textContent = '✅ Полная поддержка OAuth 1.0 с HMAC-SHA1/SHA256 подписью.';
+                authFormContainer.appendChild(oauth1Info);
+                break;
+            case 'hawk':
+                authFormContainer.appendChild(createAuthField('Hawk ID', 'hawkId', 'Enter hawk ID'));
+                authFormContainer.appendChild(createAuthField('Hawk Key', 'hawkKey', 'Enter hawk key', 'text', true));
+                authFormContainer.appendChild(createAuthSelect('Algorithm', 'algorithm', [
+                    { value: 'sha256', label: 'sha256' },
+                    { value: 'sha1', label: 'sha1' }
+                ], 'sha256'));
+                authFormContainer.appendChild(createAuthField('User', 'user', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Nonce', 'nonce', '(auto-generated if empty)'));
+                authFormContainer.appendChild(createAuthField('Extra Data (ext)', 'ext', '(optional)'));
+                authFormContainer.appendChild(createAuthField('App', 'app', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Delegation (dlg)', 'dlg', '(optional)'));
+                authFormContainer.appendChild(createAuthField('Timestamp', 'timestamp', '(auto-generated if empty)'));
+                const hawkInfo = document.createElement('div');
+                hawkInfo.className = 'auth-info-msg';
+                hawkInfo.textContent = '✅ Полная поддержка Hawk с HMAC подписью.';
+                authFormContainer.appendChild(hawkInfo);
+                break;
+        }
+        debouncedSave();
+    };
+
+    authTypeSelect.addEventListener('change', renderAuthForm);
+    renderAuthForm();
+    tbc.auth.appendChild(authContainer);
+
+    // ================== Body Tab ==================
+    const bodyContainer = document.createElement('div');
+    bodyContainer.className = 'body-container';
+
+    // Миграция старых данных
+    if (!step.bodyType) {
+        if (step.body && step.body.trim()) {
+            step.bodyType = 'raw';
+            step.rawType = 'json';
+        } else {
+            step.bodyType = 'none';
+        }
+    }
+    if (!step.formData) step.formData = [];
+    if (!step.urlencoded) step.urlencoded = [];
+    if (!step.graphql) step.graphql = { query: '', variables: '' };
+    if (!step.rawType) step.rawType = 'json';
+
+    // Радио-кнопки типов
+    const bodyTypeRow = document.createElement('div');
+    bodyTypeRow.className = 'body-type-row';
+
+    const bodyTypes = [
+        { value: 'none', label: 'none' },
+        { value: 'form-data', label: 'form-data' },
+        { value: 'urlencoded', label: 'x-www-form-urlencoded' },
+        { value: 'raw', label: 'raw' },
+        { value: 'binary', label: 'binary' },
+        { value: 'graphql', label: 'GraphQL' }
+    ];
+
+    const rawEditorId = 'cm-raw-' + idx + '-' + Date.now();
+    // Кеш DOM элементов body для быстрого переключения
+    const bodyDomCache = {
+        'none': null,
+        'form-data': null,
+        'urlencoded': null,
+        'raw': null,
+        'binary': null,
+        'graphql': null
+    };
+    let currentBodyType = step.bodyType;
+    bodyTypes.forEach(t => {
+        const lbl = document.createElement('label');
+        lbl.className = 'body-type-radio';
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = `bodyType-${idx}`;
+        radio.value = t.value;
+        radio.checked = step.bodyType === t.value;
+        radio.addEventListener('change', () => {
+            // Сохраняем данные из текущего raw-редактора перед переключением
+            const existingEditor = activeEditors.get(rawEditorId);
+            if (existingEditor && existingEditor.editor) {
+                step.body = existingEditor.editor.getValue();
+            }
+            step.bodyType = t.value;
+            renderBodyForm();
+            debouncedSave();
+        });
+        const span = document.createElement('span');
+        span.textContent = t.label;
+        lbl.append(radio, span);
+        bodyTypeRow.appendChild(lbl);
+    });
+
+    bodyContainer.appendChild(bodyTypeRow);
+
+    const bodyFormContainer = document.createElement('div');
+    bodyFormContainer.className = 'body-form-container';
+    bodyContainer.appendChild(bodyFormContainer);
+
+    // ===== Хелпер: таблица ключ-значение =====
+    const renderKeyValueTable = (arr, valuePlaceholder = 'Значение', showType = false) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'key-value-table-wrapper';
+
+        const table = document.createElement('table');
+        table.className = 'key-value-table';
+        table.innerHTML = `<thead><tr>
+            <th class="kv-enabled"></th>
+            <th class="kv-key">Ключ</th>
+            <th class="kv-value">Значение</th>
+            ${showType ? '<th class="kv-type">Тип</th>' : ''}
+            <th class="kv-actions"></th>
+        </tr></thead>`;
+        const tBody = document.createElement('tbody');
+        table.appendChild(tBody);
+
+        const renderRow = (item, i) => {
+            const tr = document.createElement('tr');
+            tr.className = 'kv-row' + (item.enabled ? '' : ' disabled');
+
+            const tdE = document.createElement('td');
+            tdE.className = 'kv-enabled';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = item.enabled !== false;
+            cb.onchange = () => {
+                item.enabled = cb.checked;
+                tr.classList.toggle('disabled', !cb.checked);
+                debouncedSave();
+            };
+            tdE.appendChild(cb);
+            tr.appendChild(tdE);
+
+            const tdK = document.createElement('td');
+            tdK.className = 'kv-key';
+            const ki = document.createElement('input');
+            ki.type = 'text';
+            ki.value = item.key || '';
+            ki.placeholder = 'Ключ';
+            ki.oninput = () => { item.key = ki.value.trim(); debouncedSave(); };
+            tdK.appendChild(ki);
+            tr.appendChild(tdK);
+
+            const tdV = document.createElement('td');
+            tdV.className = 'kv-value';
+
+            if (showType && item.type === 'file') {
+                const fileWrap = document.createElement('div');
+                fileWrap.className = 'file-input-wrap';
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.className = 'kv-file-input';
+                fileInput.onchange = () => {
+                    if (fileInput.files[0]) {
+                        item.filePath = fileInput.files[0].path;
+                        item.fileName = fileInput.files[0].name;
+                        debouncedSave();
+                    }
+                };
+                const fileName = document.createElement('span');
+                fileName.className = 'kv-file-name';
+                fileName.textContent = item.fileName || 'Выберите файл';
+                fileWrap.append(fileInput, fileName);
+                tdV.appendChild(fileWrap);
+            } else {
+                const vi = document.createElement('input');
+                vi.type = 'text';
+                vi.value = item.value || '';
+                vi.placeholder = valuePlaceholder;
+                vi.oninput = () => { item.value = vi.value; debouncedSave(); };
+                tdV.appendChild(vi);
+            }
+            tr.appendChild(tdV);
+
+            if (showType) {
+                const tdT = document.createElement('td');
+                tdT.className = 'kv-type';
+                const sel = document.createElement('select');
+                ['text', 'file'].forEach(opt => {
+                    const o = document.createElement('option');
+                    o.value = opt;
+                    o.textContent = opt;
+                    sel.appendChild(o);
+                });
+                sel.value = item.type || 'text';
+                sel.onchange = () => {
+                    item.type = sel.value;
+                    debouncedSave();
+                    tBody.innerHTML = '';
+                    arr.forEach((it, idx) => renderRow(it, idx));
+                };
+                tdT.appendChild(sel);
+                tr.appendChild(tdT);
+            }
+
+            const tdA = document.createElement('td');
+            tdA.className = 'kv-actions';
+            const rm = document.createElement('button');
+            rm.className = 'kv-remove-btn';
+            rm.textContent = '✕';
+            rm.onclick = () => {
+                arr.splice(i, 1);
+                tr.style.opacity = '0';
+                setTimeout(() => { tr.remove(); debouncedSave(); }, 150);
+            };
+            tdA.appendChild(rm);
+            tr.appendChild(tdA);
+            tBody.appendChild(tr);
+        };
+
+        arr.forEach((item, i) => renderRow(item, i));
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'add-kv-btn';
+        addBtn.textContent = '+ Добавить';
+        addBtn.onclick = () => {
+            const newItem = showType
+                ? { key: '', value: '', type: 'text', enabled: true }
+                : { key: '', value: '', enabled: true };
+            arr.push(newItem);
+            renderRow(newItem, arr.length - 1);
+            debouncedSave();
+        };
+
+        wrapper.append(table, addBtn);
+        return wrapper;
+    };
+
+    // ===== Рендер формы тела запроса =====
+    const renderBodyForm = () => {
+        // ВАЖНО: Перед уничтожением формы — сохранить данные из текущего raw-редактора
+        const existingEditor = activeEditors.get(rawEditorId);
+        if (existingEditor && existingEditor.editor) {
+            step.body = existingEditor.editor.getValue();
+            try { existingEditor.editor.toTextArea(); } catch (e) { }
+            activeEditors.delete(rawEditorId);
+        }
+
+        bodyFormContainer.innerHTML = '';
+        const type = step.bodyType;
+
+        switch (type) {
+            case 'none': {
+                const msg = document.createElement('div');
+                msg.className = 'body-info-msg';
+                msg.innerHTML = 'ℹ️ Этот запрос не будет иметь тела.';
+                bodyFormContainer.appendChild(msg);
+                break;
+            }
+
+            case 'form-data': {
+                const hint = document.createElement('div');
+                hint.className = 'body-hint';
+                hint.textContent = 'Content-Type: multipart/form-data (устанавливается автоматически с boundary)';
+                bodyFormContainer.appendChild(hint);
+                bodyFormContainer.appendChild(renderKeyValueTable(step.formData, 'Значение', true));
+                break;
+            }
+
+            case 'urlencoded': {
+                const hint = document.createElement('div');
+                hint.className = 'body-hint';
+                hint.textContent = 'Content-Type: application/x-www-form-urlencoded';
+                bodyFormContainer.appendChild(hint);
+                bodyFormContainer.appendChild(renderKeyValueTable(step.urlencoded));
+                break;
+            }
+
+            case 'raw': {
+                // Подвыбор raw типа (JSON/JavaScript/XML/HTML/Text)
+                const rawTypeRow = document.createElement('div');
+                rawTypeRow.className = 'raw-type-row';
+                const rawTypes = [
+                    { value: 'json', label: 'JSON', contentType: 'application/json' },
+                    { value: 'javascript', label: 'JavaScript', contentType: 'application/javascript' },
+                    { value: 'xml', label: 'XML', contentType: 'application/xml' },
+                    { value: 'html', label: 'HTML', contentType: 'text/html' },
+                    { value: 'text', label: 'Text', contentType: 'text/plain' }
+                ];
+
+                rawTypes.forEach(rt => {
+                    const lbl = document.createElement('label');
+                    lbl.className = 'raw-type-radio';
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = `rawType-${idx}`;
+                    radio.value = rt.value;
+                    radio.checked = step.rawType === rt.value;
+                    radio.addEventListener('change', () => {
+                        step.rawType = rt.value;
+                        step.contentType = rt.contentType;
+
+                        // Обновляем режим подсветки CodeMirror
+                        const editorInfo = activeEditors.get(rawEditorId);
+                        if (editorInfo && editorInfo.editor) {
+                            const modeMap = {
+                                json: { name: 'javascript', json: true },
+                                javascript: 'javascript',
+                                xml: 'xml',
+                                html: 'htmlmixed',
+                                text: 'text'
+                            };
+                            editorInfo.editor.setOption('mode', modeMap[rt.value] || 'text');
+                            editorInfo.editor.refresh();
+                        }
+                        debouncedSave();
+                    });
+                    const span = document.createElement('span');
+                    span.textContent = rt.label;
+                    lbl.append(radio, span);
+                    rawTypeRow.appendChild(lbl);
+                });
+                bodyFormContainer.appendChild(rawTypeRow);
+
+                // CodeMirror editor для raw
+                const bf = document.createElement('div');
+                bf.className = 'field';
+                const blr = document.createElement('div');
+                blr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
+                blr.appendChild(txt('label', 'Тело запроса (Ctrl+/ для комментариев)'));
+                const fmtB = document.createElement('button');
+                fmtB.className = 'secondary';
+                fmtB.style.cssText = 'padding:2px 10px;font-size:12px;';
+                fmtB.textContent = '🎨 Форматировать';
+                blr.appendChild(fmtB);
+
+                const bta = document.createElement('textarea');
+                bta.className = 'step-body';
+                bta.value = step.body || '';
+
+                const modeMap = {
+                    json: { name: 'javascript', json: true },
+                    javascript: 'javascript',
+                    xml: 'xml',
+                    html: 'htmlmixed',
+                    text: 'text'
+                };
+
+                const { wrapper: cw, editor: ce } = createCodeMirrorEditor(
+                    bta,
+                    step.body || '',
+                    modeMap[step.rawType] || 'text'
+                );
+                activeEditors.set(rawEditorId, { editor: ce, wrapper: cw });
+
+                // ===== АВТОФОРМАТИРОВАНИЕ JSON ПРИ ПЕРВОМ ОТКРЫТИИ =====
+                if (ce) {
+                    if (!step._wasFormatted && step.rawType === 'json' && step.body && step.body.trim()) {
+                        requestAnimationFrame(() => {
+                            try {
+                                const currentText = ce.getValue().trim();
+                                if (currentText) {
+                                    const parsed = JSON.parse(currentText);
+                                    const formatted = JSON.stringify(parsed, null, 2);
+                                    if (formatted !== currentText) {
+                                        ce.setValue(formatted);
+                                        step.body = formatted;
+                                        debouncedSave();
+                                    }
+                                }
+                                step._wasFormatted = true;
+                            } catch (e) {
+                                // JSON невалидный — помечаем, чтобы не пытаться снова
+                                step._wasFormatted = true;
+                            }
+                        });
+                    }
+
+                    // Автосохранение step.body при каждом изменении
+                    ce.on('change', () => {
+                        step.body = ce.getValue();
+                        bta.value = step.body;
+                        debouncedSave();
+                    });
+                }
+
+                fmtB.onclick = e => { e.stopPropagation(); formatCurrentEditor(rawEditorId); };
+                bf.append(blr, cw);
+                bodyFormContainer.appendChild(bf);
+
+                // Refresh после рендера (убирает баг с "невидимым" текстом)
+                requestAnimationFrame(() => {
+                    if (ce) {
+                        ce.refresh();
+                    }
+                });
+
+                // Устанавливаем contentType автоматически
+                const currentRaw = rawTypes.find(r => r.value === step.rawType);
+                if (currentRaw) step.contentType = currentRaw.contentType;
+                break;
+            }
+
+            case 'binary': {
+                const hint = document.createElement('div');
+                hint.className = 'body-hint';
+                hint.textContent = 'Отправит файл как бинарные данные (application/octet-stream)';
+                bodyFormContainer.appendChild(hint);
+
+                const fileField = document.createElement('div');
+                fileField.className = 'binary-file-field';
+                fileField.appendChild(txt('label', 'Выберите файл'));
+
+                const fileRow = document.createElement('div');
+                fileRow.className = 'binary-file-row';
+
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.className = 'binary-file-input';
+                fileInput.onchange = () => {
+                    if (fileInput.files[0]) {
+                        step.binaryPath = fileInput.files[0].path;
+                        step.binaryName = fileInput.files[0].name;
+                        fileNameSpan.textContent = step.binaryName;
+                        debouncedSave();
+                    }
+                };
+
+                const fileNameSpan = document.createElement('span');
+                fileNameSpan.className = 'binary-file-name';
+                fileNameSpan.textContent = step.binaryName || 'Файл не выбран';
+
+                const clearBtn = document.createElement('button');
+                clearBtn.className = 'secondary';
+                clearBtn.textContent = '✕ Очистить';
+                clearBtn.onclick = () => {
+                    step.binaryPath = '';
+                    step.binaryName = '';
+                    fileInput.value = '';
+                    fileNameSpan.textContent = 'Файл не выбран';
+                    debouncedSave();
+                };
+
+                fileRow.append(fileInput, fileNameSpan, clearBtn);
+                fileField.appendChild(fileRow);
+                bodyFormContainer.appendChild(fileField);
+                break;
+            }
+
+            case 'graphql': {
+                const hint = document.createElement('div');
+                hint.className = 'body-hint';
+                hint.textContent = 'Content-Type: application/json (GraphQL query + variables)';
+                bodyFormContainer.appendChild(hint);
+
+                // Query textarea
+                const queryField = document.createElement('div');
+                queryField.className = 'field';
+                queryField.appendChild(txt('label', 'GraphQL Query'));
+                const queryTA = document.createElement('textarea');
+                queryTA.className = 'graphql-query';
+                queryTA.placeholder = 'query {\n  user(id: 1) {\n    name\n    email\n  }\n}';
+                queryTA.value = step.graphql.query || '';
+                queryTA.style.minHeight = '150px';
+                queryTA.oninput = () => { step.graphql.query = queryTA.value; debouncedSave(); };
+                queryField.appendChild(queryTA);
+                bodyFormContainer.appendChild(queryField);
+
+                // Variables textarea (JSON)
+                const varsField = document.createElement('div');
+                varsField.className = 'field';
+                varsField.appendChild(txt('label', 'GraphQL Variables (JSON)'));
+                const varsTA = document.createElement('textarea');
+                varsTA.className = 'graphql-variables';
+                varsTA.placeholder = '{\n  "id": 1\n}';
+                varsTA.value = step.graphql.variables || '';
+                varsTA.style.minHeight = '80px';
+                varsTA.oninput = () => { step.graphql.variables = varsTA.value; debouncedSave(); };
+                varsField.appendChild(varsTA);
+                bodyFormContainer.appendChild(varsField);
+
+                step.contentType = 'application/json';
+                break;
+            }
+        }
+
+        debouncedSave();
+    };
+
+    renderBodyForm();
+    tbc.body.appendChild(bodyContainer);
+
     card.append(tbc.headers, tbc.auth, tbc.body);
-    const save = () => { step.name = ni.value.trim(); step.url = ui.value.trim(); step.method = md.value; step.auth = ai.value.trim(); step.body = bta.value; md.dataset.method = step.method; nm.textContent = step.name || `Шаг ${idx + 1}`; debouncedSave(); };
-    [ni, ui, md, ai, bta].forEach(el => el.addEventListener('input', save));
+
+    // ================== Save Logic ==================
+    const save = () => {
+        step.name = ni.value.trim();
+        step.url = ui.value.trim();
+        step.method = md.value;
+        md.dataset.method = step.method;
+        nm.textContent = step.name || `Шаг ${idx + 1}`;
+        debouncedSave();
+    };
+    [ni, ui, md].forEach(el => el.addEventListener('input', save));
+
     return card;
 }
 
@@ -1279,7 +2293,72 @@ sendSingleBtn.addEventListener('click', async () => {
 // ================== History ==================
 async function loadHistory() { fullHistory = await window.api.getHistory(); updateHistoryFilter(); renderFilteredHistory(); }
 function updateHistoryFilter() { historyFilter.innerHTML = '<option value="">Все коллекции</option>';[...new Set(fullHistory.map(h => h.collection).filter(Boolean))].forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; historyFilter.appendChild(o); }); }
-function renderFilteredHistory() { const v = historyFilter.value; historyTableBody.innerHTML = ''; (v ? fullHistory.filter(h => h.collection === v) : fullHistory).forEach(e => { const row = document.createElement('tr'); row.className = e.success ? 'success' : 'error'; row.append(txt('td', new Date(e.timestamp).toLocaleString()), txt('td', e.collection || '—'), txt('td', e.type === 'single' ? 'Send' : 'Runner'), txt('td', e.item), txt('td', e.stepName)); const tu = txt('td', e.url); tu.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'; row.appendChild(tu); const ts = document.createElement('td'); ts.appendChild(txt('span', e.success ? `✓ ${e.status}` : `✗ ${e.status}`, `status-badge ${e.success ? 'status-success' : 'status-error'}`)); row.appendChild(ts); row.addEventListener('dblclick', () => showHistoryDetail(e)); historyTableBody.appendChild(row); }); }
+// Замените renderFilteredHistory на эту версию
+function renderFilteredHistory() {
+    const v = historyFilter.value;
+    const filtered = v ? fullHistory.filter(h => h.collection === v) : fullHistory;
+
+    historyTableBody.innerHTML = '';
+
+    // Если записей мало (<50) — рендерим все
+    if (filtered.length < 50) {
+        filtered.forEach(e => renderHistoryRow(e, historyTableBody));
+        return;
+    }
+
+    // Виртуальный скролл: рендерим только первые 50 + добавляем по скроллу
+    const INITIAL_RENDER = 50;
+    const BATCH_SIZE = 25;
+    let renderedCount = 0;
+
+    const renderBatch = () => {
+        const fragment = document.createDocumentFragment();
+        const end = Math.min(renderedCount + BATCH_SIZE, filtered.length);
+        for (let i = renderedCount; i < end; i++) {
+            renderHistoryRow(filtered[i], fragment);
+        }
+        historyTableBody.appendChild(fragment);
+        renderedCount = end;
+    };
+
+    // Первый батч
+    for (let i = 0; i < INITIAL_RENDER && i < filtered.length; i++) {
+        renderHistoryRow(filtered[i], historyTableBody);
+    }
+    renderedCount = INITIAL_RENDER;
+
+    // Lazy loading при скролле
+    const scrollContainer = historyTableBody.closest('.history-table-container') || historyTableBody.parentElement;
+    const onScroll = () => {
+        if (renderedCount >= filtered.length) return;
+        const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+        if (scrollTop + clientHeight >= scrollHeight - 100) {
+            renderBatch();
+        }
+    };
+    scrollContainer.addEventListener('scroll', onScroll);
+}
+
+function renderHistoryRow(e, container) {
+    const row = document.createElement('tr');
+    row.className = e.success ? 'success' : 'error';
+    row.append(
+        txt('td', new Date(e.timestamp).toLocaleString()),
+        txt('td', e.collection || '—'),
+        txt('td', e.type === 'single' ? 'Send' : 'Runner'),
+        txt('td', e.item),
+        txt('td', e.stepName)
+    );
+    const tu = txt('td', e.url);
+    tu.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    row.appendChild(tu);
+    const ts = document.createElement('td');
+    ts.appendChild(txt('span', e.success ? `✓ ${e.status}` : `✗ ${e.status}`,
+        `status-badge ${e.success ? 'status-success' : 'status-error'}`));
+    row.appendChild(ts);
+    row.addEventListener('dblclick', () => showHistoryDetail(e));
+    container.appendChild(row);
+}
 function showHistoryDetail(e) { const rd = { status: e.status, statusText: '', headers: e.responseHeaders || {}, data: e.responseData, url: e.url }; buildDetailContent({ responseData: JSON.stringify(rd), error: e.success ? null : e.error, url: e.url, requestBody: e.requestBody, requestHeaders: e.requestHeaders, item: e.item, stepName: e.stepName }); detailModalTitle.textContent = `История: ${e.stepName}`; detailModal.classList.add('active'); }
 refreshHistoryBtn.addEventListener('click', loadHistory);
 historyFilter.addEventListener('change', renderFilteredHistory);

@@ -1,6 +1,6 @@
 {
   "name": "ab-runner",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",
@@ -54,7 +54,8 @@
   "dependencies": {
     "axios": "^1.16.1",
     "codemirror": "^5.65.18",
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "form-data": "^4.0.6"
   },
   "devDependencies": {
     "electron": "^42.2.0",
