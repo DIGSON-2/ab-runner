@@ -640,21 +640,95 @@ async function processPostmanFiles(files) {
 }
 function parsePostmanItems(items, pId) {
     if (!Array.isArray(items)) return;
+
+    // Вспомогательная функция очистки невидимых символов
+    const cleanInvisibleChars = (str) => {
+        if (typeof str !== 'string') return str;
+        return str
+            .replace(/^\uFEFF/, '')
+            .replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '')
+            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+            .replace(/[\u200C\u200D\u2060\u2061\u2062\u2063\u2064]/g, '')
+            .replace(/[\uFFF0-\uFFFF]/g, '')
+            .replace(/[\u00AD]/g, '')
+            .replace(/[\u180E]/g, '');
+    };
+
     items.forEach(it => {
         if (it.item && Array.isArray(it.item)) {
             const nf = { id: generateUniqueId(), name: it.name || 'Folder', parentId: pId, collapsed: true };
-            data.folders.push(nf); parsePostmanItems(it.item, nf.id);
+            data.folders.push(nf);
+            parsePostmanItems(it.item, nf.id);
         } else if (it.request) {
             const req = it.request;
-            const step = { name: it.name || '', method: (typeof req.method === 'string' ? req.method : 'GET').toUpperCase(), url: '', auth: '', body: '', contentType: 'application/json', customHeaders: [] };
-            if (typeof req.url === 'string') step.url = req.url; else if (req.url?.raw) step.url = req.url.raw;
-            if (Array.isArray(req.header)) req.header.forEach(h => { if (h.disabled) return; const kl = h.key.toLowerCase(); if (kl === 'authorization') step.auth = h.value; else if (kl === 'content-type') step.contentType = h.value; else step.customHeaders.push({ key: h.key, value: h.value, enabled: true }); });
-            if (req.body) {
-                if (req.body.mode === 'raw' && req.body.raw) step.body = req.body.raw;
-                else if (req.body.mode === 'urlencoded' && Array.isArray(req.body.urlencoded)) { const o = {}; req.body.urlencoded.forEach(u => { if (!u.disabled) o[u.key] = u.value; }); step.body = JSON.stringify(o, null, 2); }
-                else if (req.body.mode === 'formdata' && Array.isArray(req.body.formdata)) { const o = {}; req.body.formdata.forEach(u => { if (!u.disabled && u.type === 'text') o[u.key] = u.value; }); step.body = JSON.stringify(o, null, 2); }
+            const step = {
+                name: cleanInvisibleChars(it.name || ''),
+                method: (typeof req.method === 'string' ? req.method : 'GET').toUpperCase(),
+                url: '',
+                auth: '',
+                body: '',
+                contentType: 'application/json',
+                customHeaders: []
+            };
+
+            // Очищаем URL
+            if (typeof req.url === 'string') {
+                step.url = cleanInvisibleChars(req.url);
+            } else if (req.url?.raw) {
+                step.url = cleanInvisibleChars(req.url.raw);
             }
-            data.collections.push({ id: generateUniqueId(), name: step.name || 'Request', steps: [step], folderId: pId });
+
+            // Очищаем заголовки
+            if (Array.isArray(req.header)) {
+                req.header.forEach(h => {
+                    if (h.disabled) return;
+                    const kl = h.key.toLowerCase();
+                    const cleanKey = cleanInvisibleChars(h.key);
+                    const cleanValue = cleanInvisibleChars(h.value);
+
+                    if (kl === 'authorization') {
+                        step.auth = cleanValue;
+                    } else if (kl === 'content-type') {
+                        step.contentType = cleanValue;
+                    } else {
+                        step.customHeaders.push({
+                            key: cleanKey,
+                            value: cleanValue,
+                            enabled: true
+                        });
+                    }
+                });
+            }
+
+            // Очищаем тело запроса
+            if (req.body) {
+                if (req.body.mode === 'raw' && req.body.raw) {
+                    step.body = cleanInvisibleChars(req.body.raw);
+                } else if (req.body.mode === 'urlencoded' && Array.isArray(req.body.urlencoded)) {
+                    const o = {};
+                    req.body.urlencoded.forEach(u => {
+                        if (!u.disabled) {
+                            o[cleanInvisibleChars(u.key)] = cleanInvisibleChars(u.value);
+                        }
+                    });
+                    step.body = JSON.stringify(o, null, 2);
+                } else if (req.body.mode === 'formdata' && Array.isArray(req.body.formdata)) {
+                    const o = {};
+                    req.body.formdata.forEach(u => {
+                        if (!u.disabled && u.type === 'text') {
+                            o[cleanInvisibleChars(u.key)] = cleanInvisibleChars(u.value);
+                        }
+                    });
+                    step.body = JSON.stringify(o, null, 2);
+                }
+            }
+
+            data.collections.push({
+                id: generateUniqueId(),
+                name: step.name || 'Request',
+                steps: [step],
+                folderId: pId
+            });
         }
     });
 }
@@ -1431,16 +1505,141 @@ if (saveJsonBtn) {
 }
 // ================== cURL Import ==================
 function parseCurl(cmd) {
-    let c = cmd.replace(/\r?\n\s*/g, ' ').replace(/\s+/g, ' ').trim(); if (!c.startsWith('curl ')) return null; c = c.substring(5);
-    const tokens = []; let cur = '', st = 0;
-    for (let i = 0; i < c.length; i++) { const ch = c[i]; if (st === 0) { if (ch === ' ') { if (cur) { tokens.push(cur); cur = ''; } } else if (ch === "'") st = 1; else if (ch === '"') st = 2; else if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else cur += ch; } else if (st === 1) { if (ch === "'") { if (i + 1 < c.length && c[i + 1] === "'") { cur += "'"; i++; } else st = 0; } else cur += ch; } else if (st === 2) { if (ch === '\\' && i + 1 < c.length) cur += c[++i]; else if (ch === '"') st = 0; else cur += ch; } }
+    // Вспомогательная функция очистки невидимых символов
+    const cleanInvisibleChars = (str) => {
+        if (typeof str !== 'string') return str;
+        return str
+            .replace(/^\uFEFF/, '') // BOM
+            .replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '') // Zero-width и control
+            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Control characters
+            .replace(/[\u200C\u200D\u2060\u2061\u2062\u2063\u2064]/g, '') // Zero-width joiners/non-joiners
+            .replace(/[\uFFF0-\uFFFF]/g, '') // Specials
+            .replace(/[\u00AD]/g, '') // Soft hyphen
+            .replace(/[\u180E]/g, ''); // Mongolian vowel separator
+    };
+
+    // Очищаем саму команду от невидимых символов
+    let c = cleanInvisibleChars(cmd)
+        .replace(/\r?\n\s*/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!c.startsWith('curl ')) return null;
+    c = c.substring(5);
+
+    // Токенизация с учетом кавычек и экранирования
+    const tokens = [];
+    let cur = '', st = 0;
+    for (let i = 0; i < c.length; i++) {
+        const ch = c[i];
+        if (st === 0) {
+            if (ch === ' ') {
+                if (cur) { tokens.push(cur); cur = ''; }
+            } else if (ch === "'") st = 1;
+            else if (ch === '"') st = 2;
+            else if (ch === '\\' && i + 1 < c.length) cur += c[++i];
+            else cur += ch;
+        } else if (st === 1) {
+            if (ch === "'") {
+                if (i + 1 < c.length && c[i + 1] === "'") { cur += "'"; i++; }
+                else st = 0;
+            } else cur += ch;
+        } else if (st === 2) {
+            if (ch === '\\' && i + 1 < c.length) cur += c[++i];
+            else if (ch === '"') st = 0;
+            else cur += ch;
+        }
+    }
     if (cur) tokens.push(cur);
+
     const res = { method: 'GET', url: '', headers: {}, body: null, urlEncodedParams: [] };
-    const flags = ['-X', '--request', '-H', '--header', '-d', '--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '-u', '--user', '-o', '--output', '-e', '--referer'];
+    const flags = ['-X', '--request', '-H', '--header', '-d', '--data', '--data-raw',
+        '--data-binary', '--data-ascii', '--data-urlencode', '-u', '--user',
+        '-o', '--output', '-e', '--referer', '-b', '--cookie'];
     let i = 0;
-    while (i < tokens.length) { const t = tokens[i]; if (['--location', '-L', '--compressed', '--silent', '-s', '--insecure', '-k', '--show-error'].includes(t)) { i++; continue; } if (t === '-X' || t === '--request') { if (i + 1 < tokens.length) res.method = tokens[++i].toUpperCase(); i++; continue; } if (t === '-H' || t === '--header') { if (i + 1 < tokens.length) { const h = tokens[++i]; const ci = h.indexOf(':'); if (ci > 0) { const k = h.substring(0, ci).trim(); const v = h.substring(ci + 1).trim(); if (k) res.headers[k] = v; } } i++; continue; } if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary' || t === '--data-ascii') { if (i + 1 < tokens.length) { res.body = tokens[++i]; if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '--data-urlencode') { if (i + 1 < tokens.length) { res.urlEncodedParams.push(tokens[++i]); if (!res.headers['Content-Type'] && !res.headers['content-type']) res.headers['Content-Type'] = 'application/x-www-form-urlencoded'; } i++; continue; } if (t === '-u' || t === '--user') { if (i + 1 < tokens.length) res.headers['Authorization'] = 'Basic ' + btoa(tokens[++i]); i++; continue; } if (flags.includes(t)) { i += 2; continue; } if (!t.startsWith('-') && !res.url) res.url = t; i++; }
-    if (res.urlEncodedParams.length && !res.body) res.body = res.urlEncodedParams.join('&');
+
+    while (i < tokens.length) {
+        const t = tokens[i];
+
+        if (['--location', '-L', '--compressed', '--silent', '-s',
+            '--insecure', '-k', '--show-error'].includes(t)) {
+            i++; continue;
+        }
+
+        if (t === '-X' || t === '--request') {
+            if (i + 1 < tokens.length) res.method = tokens[++i].toUpperCase();
+            i++; continue;
+        }
+
+        if (t === '-H' || t === '--header') {
+            if (i + 1 < tokens.length) {
+                const h = cleanInvisibleChars(tokens[++i]);
+                const ci = h.indexOf(':');
+                if (ci > 0) {
+                    const k = h.substring(0, ci).trim();
+                    const v = h.substring(ci + 1).trim();
+                    if (k) res.headers[k] = v;
+                }
+            }
+            i++; continue;
+        }
+
+        if (t === '-b' || t === '--cookie') {
+            if (i + 1 < tokens.length) {
+                const cookieValue = cleanInvisibleChars(tokens[++i]);
+                res.headers['Cookie'] = cookieValue;
+            }
+            i++; continue;
+        }
+
+        if (t === '-d' || t === '--data' || t === '--data-raw' ||
+            t === '--data-binary' || t === '--data-ascii') {
+            if (i + 1 < tokens.length) {
+                // КРИТИЧНО: очищаем тело от невидимых символов
+                res.body = cleanInvisibleChars(tokens[++i]);
+                if (!res.headers['Content-Type'] && !res.headers['content-type']) {
+                    res.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+                }
+            }
+            i++; continue;
+        }
+
+        if (t === '--data-urlencode') {
+            if (i + 1 < tokens.length) {
+                res.urlEncodedParams.push(cleanInvisibleChars(tokens[++i]));
+                if (!res.headers['Content-Type'] && !res.headers['content-type']) {
+                    res.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+                }
+            }
+            i++; continue;
+        }
+
+        if (t === '-u' || t === '--user') {
+            if (i + 1 < tokens.length) {
+                res.headers['Authorization'] = 'Basic ' + btoa(tokens[++i]);
+            }
+            i++; continue;
+        }
+
+        if (flags.includes(t)) { i += 2; continue; }
+
+        if (!t.startsWith('-') && !res.url) {
+            res.url = cleanInvisibleChars(t);
+        }
+        i++;
+    }
+
+    if (res.urlEncodedParams.length && !res.body) {
+        res.body = res.urlEncodedParams.join('&');
+    }
     if (res.body && res.method === 'GET') res.method = 'POST';
+
+    // Дополнительная очистка URL и заголовков
+    res.url = cleanInvisibleChars(res.url);
+    for (const key in res.headers) {
+        res.headers[key] = cleanInvisibleChars(res.headers[key]);
+    }
+
     return res;
 }
 function importStepFromCurl(step, idx) { curlInput.value = ''; curlModal.classList.add('active'); window._curlTarget = { step, idx }; }

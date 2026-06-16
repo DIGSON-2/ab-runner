@@ -205,7 +205,12 @@ app.on('activate', () => {
 // ================== String Utilities ==================
 function cleanString(str) {
     if (typeof str !== 'string') return str;
-    return str.replace(/^\uFEFF/, '').replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
+    return str
+        .replace(/^\uFEFF/, '') // BOM
+        .replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '') // Zero-width и control symbols
+        .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Control characters
+        .replace(/[\u200C\u200D\u2060\u2061\u2062\u2063]/g, '') // Zero-width joiners
+        .replace(/[\uFFF0-\uFFFF]/g, ''); // Specials
 }
 
 function stripJsonComments(str) {
