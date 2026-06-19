@@ -783,6 +783,7 @@ function parsePostmanItems(items, pId) {
     } else if (it.request) {
       const req = it.request;
       const step = {
+        id: generateStepId(),
         name: cleanInvisibleChars(it.name || ''),
         method: (typeof req.method === 'string' ? req.method : 'GET').toUpperCase(),
         url: '',
@@ -1326,6 +1327,118 @@ function generateUniqueId() {
     id += '-' + Math.random().toString(36).slice(2, 7);
   return id;
 }
+// Step ids must be unique across every collection's steps (used to reference a
+// login step for pre-request token chaining).
+function generateStepId() {
+  const used = new Set();
+  (data.collections || []).forEach((c) => (c.steps || []).forEach((s) => s.id && used.add(s.id)));
+  let id = 's-' + Date.now().toString(36);
+  while (used.has(id)) id += Math.random().toString(36).slice(2, 5);
+  return id;
+}
+
+// Build the "Pre-request" tab UI for declarative auto-token chaining.
+function buildPrereqTab(container, step) {
+  if (!step.tokenAuth || typeof step.tokenAuth !== 'object') {
+    step.tokenAuth = {
+      enabled: false,
+      loginStepId: '',
+      tokenPath: '',
+      tokenVar: 'token',
+      ttlSeconds: 3600,
+      asBearer: false,
+    };
+  }
+  const cfg = step.tokenAuth;
+  const wrap = document.createElement('div');
+  wrap.className = 'prereq-container';
+
+  const enableRow = document.createElement('label');
+  enableRow.className = 'prereq-enable';
+  const enableCb = document.createElement('input');
+  enableCb.type = 'checkbox';
+  enableCb.checked = !!cfg.enabled;
+  enableRow.appendChild(enableCb);
+  enableRow.appendChild(document.createTextNode(' Авто-получение токена (pre-request)'));
+  wrap.appendChild(enableRow);
+
+  const fields = document.createElement('div');
+  fields.className = 'prereq-fields';
+
+  // Login step selector — other steps in the same collection.
+  const loginField = document.createElement('div');
+  loginField.className = 'prereq-field';
+  loginField.appendChild(txt('label', 'Шаг логина'));
+  const loginSel = document.createElement('select');
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '— выберите шаг —';
+  loginSel.appendChild(noneOpt);
+  (activeCollection?.steps || []).forEach((s, i) => {
+    if (s === step || !s.id) return;
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name || s.url || `Шаг ${i + 1}`;
+    if (s.id === cfg.loginStepId) opt.selected = true;
+    loginSel.appendChild(opt);
+  });
+  loginSel.onchange = () => {
+    cfg.loginStepId = loginSel.value;
+    debouncedSave();
+  };
+  loginField.appendChild(loginSel);
+  fields.appendChild(loginField);
+
+  const mkInput = (label, key, placeholder, type = 'text') => {
+    const f = document.createElement('div');
+    f.className = 'prereq-field';
+    f.appendChild(txt('label', label));
+    const inp = document.createElement('input');
+    inp.type = type;
+    inp.placeholder = placeholder || '';
+    inp.value = cfg[key] ?? '';
+    inp.oninput = () => {
+      cfg[key] = type === 'number' ? Number(inp.value) : inp.value;
+      debouncedSave();
+    };
+    f.appendChild(inp);
+    return f;
+  };
+  fields.appendChild(mkInput('Путь к токену в ответе', 'tokenPath', 'напр. data.token'));
+  fields.appendChild(mkInput('Имя переменной', 'tokenVar', 'token'));
+  fields.appendChild(mkInput('TTL кэша (сек, 0 = всегда заново)', 'ttlSeconds', '3600', 'number'));
+
+  const bearerRow = document.createElement('label');
+  bearerRow.className = 'prereq-enable';
+  const bearerCb = document.createElement('input');
+  bearerCb.type = 'checkbox';
+  bearerCb.checked = !!cfg.asBearer;
+  bearerCb.onchange = () => {
+    cfg.asBearer = bearerCb.checked;
+    debouncedSave();
+  };
+  bearerRow.appendChild(bearerCb);
+  bearerRow.appendChild(document.createTextNode(' Добавить как Authorization: Bearer <token>'));
+  fields.appendChild(bearerRow);
+
+  const hint = document.createElement('div');
+  hint.className = 'prereq-hint';
+  hint.textContent =
+    'Если токен отсутствует или истёк, сначала выполнится шаг логина, токен извлечётся по пути и подставится в этот запрос как {имя_переменной} (в URL, заголовках, теле).';
+  fields.appendChild(hint);
+
+  const sync = () => {
+    fields.style.display = enableCb.checked ? 'block' : 'none';
+  };
+  enableCb.onchange = () => {
+    cfg.enabled = enableCb.checked;
+    sync();
+    debouncedSave();
+  };
+  sync();
+  wrap.appendChild(fields);
+  container.appendChild(wrap);
+}
 
 // ================== Steps ==================
 function renderSteps() {
@@ -1499,6 +1612,7 @@ function createStepCard(step, idx) {
   crt('headers', 'Headers');
   crt('auth', 'Authorization');
   crt('body', 'Body');
+  crt('prereq', 'Pre-request');
   card.appendChild(tc);
 
   Object.keys(tb).forEach((id) => {
@@ -1862,6 +1976,9 @@ function createStepCard(step, idx) {
   authTypeSelect.addEventListener('change', renderAuthForm);
   renderAuthForm();
   tbc.auth.appendChild(authContainer);
+
+  // ================== Pre-request Tab (auto-token chaining) ==================
+  buildPrereqTab(tbc.prereq, step);
 
   // ================== Body Tab ==================
   const bodyContainer = document.createElement('div');
@@ -2767,6 +2884,7 @@ sendSingleBtn.addEventListener('click', async () => {
       td || '{}',
       activeCollection?.name || '',
       getActiveEnvironment(),
+      activeCollection?.steps || [],
     );
     sendSingleBtn.disabled = false;
     sendSingleBtn.textContent = '▶ Отправить';
@@ -3294,6 +3412,7 @@ if (parseCurlBtn)
       return;
     }
     const ns = {
+      id: generateStepId(),
       name: '',
       url: p.url,
       method: p.method,
@@ -3341,6 +3460,7 @@ newFolderBtn.addEventListener('click', async () => {
 addStepBtn.addEventListener('click', () => {
   if (!activeCollection) return;
   activeCollection.steps.push({
+    id: generateStepId(),
     name: '',
     url: '',
     method: 'GET',
@@ -3426,6 +3546,9 @@ async function loadData() {
       if (c.folderId === undefined) c.folderId = null;
       if (!c.steps) c.steps = [];
       if (!c.results) c.results = [];
+      c.steps.forEach((s) => {
+        if (!s.id) s.id = generateStepId();
+      });
     });
     console.log('✅ Данные загружены:', {
       folders: data.folders.length,
