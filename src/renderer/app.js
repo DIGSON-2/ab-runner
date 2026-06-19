@@ -3,6 +3,7 @@ import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
+import { touchTab, closeTab, closeUnpinned, setPinned, pruneTabs } from './tabs.js';
 
 // Performance Monitor
 const perf = {
@@ -23,9 +24,10 @@ const perf = {
 };
 // renderer.js – полная исправленная версия
 window.perf = perf;
-let data = { folders: [], collections: [], environments: [] };
+let data = { folders: [], collections: [], environments: [], openTabs: [] };
 let activeCollectionId = null;
 let activeCollection = null;
+let activeTabStepId = null;
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
@@ -1327,6 +1329,110 @@ function generateUniqueId() {
   return id;
 }
 
+// ================== Open-request tabs ==================
+function generateStepId() {
+  const used = new Set();
+  data.collections.forEach((c) => (c.steps || []).forEach((s) => s.id && used.add(s.id)));
+  let id = 'st' + Date.now().toString(36);
+  while (used.has(id)) id += Math.random().toString(36).slice(2, 5);
+  return id;
+}
+function tabRefExists({ stepId, collectionId }) {
+  const col = data.collections.find((c) => c.id === collectionId);
+  return !!col && (col.steps || []).some((s) => s.id === stepId);
+}
+function touchOpenTab(step) {
+  if (!step || !activeCollection) return;
+  if (!step.id) step.id = generateStepId();
+  data.openTabs = touchTab(data.openTabs || [], {
+    stepId: step.id,
+    collectionId: activeCollection.id,
+  });
+  activeTabStepId = step.id;
+  renderTabStrip();
+  debouncedSave();
+}
+function openStepFromTab(tab) {
+  activeTabStepId = tab.stepId;
+  if (activeCollectionId !== tab.collectionId) selectCollection(tab.collectionId);
+  else renderTabStrip();
+  requestAnimationFrame(() => {
+    const card = stepsContainer.querySelector(`.step-card[data-step-id="${CSS.escape(tab.stepId)}"]`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('step-flash');
+    setTimeout(() => card.classList.remove('step-flash'), 1200);
+  });
+}
+function renderTabStrip() {
+  const strip = document.getElementById('tabStrip');
+  if (!strip) return;
+  data.openTabs = pruneTabs(data.openTabs || [], tabRefExists);
+  const tabs = data.openTabs;
+  strip.innerHTML = '';
+  if (!tabs.length) {
+    strip.style.display = 'none';
+    return;
+  }
+  strip.style.display = 'flex';
+  tabs.forEach((t) => {
+    const col = data.collections.find((c) => c.id === t.collectionId);
+    const step = col.steps.find((s) => s.id === t.stepId);
+    const idx = col.steps.indexOf(step);
+    const method = step.method || 'GET';
+
+    const el = document.createElement('div');
+    el.className = 'req-tab' + (t.stepId === activeTabStepId ? ' active' : '') + (t.pinned ? ' pinned' : '');
+    el.title = `${method} ${step.url || ''}\n${col.name || ''}`;
+    el.onclick = () => openStepFromTab(t);
+
+    const badge = txt('span', method, 'req-tab-method method-badge');
+    badge.dataset.method = method;
+    const label = txt('span', step.name || step.url || `Шаг ${idx + 1}`, 'req-tab-label');
+    const colName = txt('span', col.name || '', 'req-tab-col');
+
+    const pin = document.createElement('button');
+    pin.className = 'req-tab-pin';
+    pin.textContent = t.pinned ? '📌' : '📎';
+    pin.title = t.pinned ? 'Открепить' : 'Закрепить';
+    pin.onclick = (e) => {
+      e.stopPropagation();
+      data.openTabs = setPinned(data.openTabs, t.stepId, !t.pinned);
+      renderTabStrip();
+      debouncedSave();
+    };
+
+    const close = document.createElement('button');
+    close.className = 'req-tab-close';
+    close.textContent = '×';
+    close.title = 'Закрыть';
+    close.onclick = (e) => {
+      e.stopPropagation();
+      data.openTabs = closeTab(data.openTabs, t.stepId);
+      if (activeTabStepId === t.stepId) activeTabStepId = null;
+      renderTabStrip();
+      debouncedSave();
+    };
+
+    el.append(badge, label, colName, pin, close);
+    strip.appendChild(el);
+  });
+
+  if (tabs.some((t) => !t.pinned)) {
+    const clear = document.createElement('button');
+    clear.className = 'req-tab-clear';
+    clear.textContent = '✕ Закрыть незакреплённые';
+    clear.title = 'Закрыть все незакреплённые вкладки';
+    clear.onclick = () => {
+      data.openTabs = closeUnpinned(data.openTabs);
+      if (!data.openTabs.some((t) => t.stepId === activeTabStepId)) activeTabStepId = null;
+      renderTabStrip();
+      debouncedSave();
+    };
+    strip.appendChild(clear);
+  }
+}
+
 // ================== Steps ==================
 function renderSteps() {
   perf.start('renderSteps');
@@ -1372,9 +1478,12 @@ function renderSteps() {
   perf.end('renderSteps');
 }
 function createStepCard(step, idx) {
+  if (!step.id) step.id = generateStepId();
   const card = document.createElement('div');
   card.className = 'step-card';
   card.dataset.index = idx;
+  card.dataset.stepId = step.id;
+  card.addEventListener('focusin', () => touchOpenTab(step));
 
   // ================== Header ==================
   const hdr = document.createElement('div');
@@ -1401,8 +1510,13 @@ function createStepCard(step, idx) {
   delB.onclick = async () => {
     if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) {
       activeCollection.steps.splice(idx, 1);
+      if (step.id) {
+        data.openTabs = closeTab(data.openTabs || [], step.id);
+        if (activeTabStepId === step.id) activeTabStepId = null;
+      }
       saveData();
       renderSteps();
+      renderTabStrip();
       toast('Шаг удалён', 'success');
     }
   };
@@ -2659,6 +2773,7 @@ function extractVariables(step) {
 }
 function openSendModal(step) {
   currentStepForSend = step;
+  touchOpenTab(step);
   sendRequestModal.classList.add('active');
   const infoEl = sendRequestModal.querySelector('.send-modal-step-name');
   if (infoEl) infoEl.textContent = `${step.method || 'GET'} ${step.name || 'Без названия'}`;
@@ -3294,6 +3409,7 @@ if (parseCurlBtn)
       return;
     }
     const ns = {
+      id: generateStepId(),
       name: '',
       url: p.url,
       method: p.method,
@@ -3341,6 +3457,7 @@ newFolderBtn.addEventListener('click', async () => {
 addStepBtn.addEventListener('click', () => {
   if (!activeCollection) return;
   activeCollection.steps.push({
+    id: generateStepId(),
     name: '',
     url: '',
     method: 'GET',
@@ -3426,7 +3543,12 @@ async function loadData() {
       if (c.folderId === undefined) c.folderId = null;
       if (!c.steps) c.steps = [];
       if (!c.results) c.results = [];
+      c.steps.forEach((s) => {
+        if (!s.id) s.id = generateStepId();
+      });
     });
+    if (!Array.isArray(data.openTabs)) data.openTabs = [];
+    data.openTabs = pruneTabs(data.openTabs, tabRefExists);
     console.log('✅ Данные загружены:', {
       folders: data.folders.length,
       collections: data.collections.length,
@@ -3436,9 +3558,10 @@ async function loadData() {
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();
+    renderTabStrip();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
-    data = { folders: [], collections: [], environments: [] };
+    data = { folders: [], collections: [], environments: [], openTabs: [] };
     toast('Ошибка загрузки данных', 'error');
   }
 }
