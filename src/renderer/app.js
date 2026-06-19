@@ -2457,7 +2457,7 @@ function createStepCard(step, idx) {
   renderBodyForm();
   tbc.body.appendChild(bodyContainer);
 
-  card.append(tbc.headers, tbc.auth, tbc.body);
+  card.append(tbc.headers, tbc.auth, tbc.body, tbc.prereq);
 
   // ================== Save Logic ==================
   const save = () => {
