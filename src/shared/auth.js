@@ -1,5 +1,6 @@
 // Authorization / header construction shared between the main process and tests.
 const crypto = require('crypto');
+const { replacePlaceholders } = require('./placeholders');
 
 const RAW_CONTENT_TYPES = {
   json: 'application/json',
@@ -259,11 +260,17 @@ function applyAuth(headers, step, url, method) {
   }
 }
 
-function buildHeaders(step, url = '', method = 'GET') {
+function buildHeaders(step, url = '', method = 'GET', item, env) {
   const headers = {};
   applyCustomHeaders(headers, step);
   applyContentType(headers, step);
   applyAuth(headers, step, url, method);
+  // Resolve placeholders (e.g. {token}) in header values when data/env is given.
+  if (item !== undefined || env !== undefined) {
+    for (const key of Object.keys(headers)) {
+      headers[key] = replacePlaceholders(headers[key], item ?? null, env || {});
+    }
+  }
   return headers;
 }
 

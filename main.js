@@ -8,6 +8,12 @@ const FormData = require('form-data');
 const { stripJsonComments } = require('./src/shared/strings');
 const { replacePlaceholders } = require('./src/shared/placeholders');
 const { buildHeaders } = require('./src/shared/auth');
+const {
+  extractToken,
+  isTokenValid,
+  makeCacheEntry,
+  cacheKey,
+} = require('./src/shared/tokenProvider');
 
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';
@@ -301,6 +307,62 @@ async function writeData(data) {
 ipcMain.handle('get-data', async () => readData());
 ipcMain.handle('save-data', async (event, d) => { await writeData(d); return { success: true }; });
 
+// ================== Pre-request token chaining ==================
+// Token cache shared across runs and single sends, keyed by scope + variable.
+const tokenCache = new Map();
+
+// Resolve the auto-token for a step, returning an environment augmented with the
+// token variable. Runs the referenced login step (with caching/TTL) only when no
+// valid cached token exists. Throws on misconfiguration so the caller records it
+// as a failed step.
+async function resolveTokenEnv(step, allSteps, item, env, scope, signal) {
+  const cfg = step && step.tokenAuth;
+  if (!cfg || !cfg.enabled) return env;
+
+  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
+  const key = cacheKey(scope, tokenVar);
+  const now = Date.now();
+
+  let token;
+  const cached = tokenCache.get(key);
+  if (isTokenValid(cached, now)) {
+    token = cached.value;
+  } else {
+    const login = (allSteps || []).find((s) => s.id && s.id === cfg.loginStepId);
+    if (!login) throw new Error('Шаг логина для авто-токена не найден');
+    if (login === step) throw new Error('Шаг логина не может ссылаться сам на себя');
+
+    const loginUrl = replacePlaceholders(login.url, item, env);
+    const { data, headers: bodyHeaders } = buildRequestBody(login, item, env);
+    const loginHeaders = { ...buildHeaders(login, loginUrl, login.method), ...bodyHeaders };
+    const resp = await axios({
+      method: login.method,
+      url: loginUrl,
+      headers: loginHeaders,
+      data,
+      signal,
+      timeout: 30000,
+    });
+    token = extractToken(resp.data, cfg.tokenPath);
+    if (token == null) {
+      throw new Error(`Токен не найден по пути "${cfg.tokenPath}" в ответе логина`);
+    }
+    tokenCache.set(key, makeCacheEntry(token, cfg.ttlSeconds ?? 3600, now));
+  }
+
+  const nextEnv = { ...env, [tokenVar]: token };
+  return nextEnv;
+}
+
+// Optionally inject "Authorization: Bearer <token>" when the step opted in.
+function applyBearerToken(headers, step, stepEnv) {
+  const cfg = step && step.tokenAuth;
+  if (!cfg || !cfg.enabled || !cfg.asBearer) return;
+  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
+  const token = stepEnv && stepEnv[tokenVar];
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+}
+
 // ================== Run Collection ==================
 let currentRun = null;
 
@@ -333,13 +395,16 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
 
         const step = steps[j];
         const stepName = step.name || `Шаг ${j + 1}`;
-        const currentUrl = replacePlaceholders(step.url, item, env);
+        let currentUrl = replacePlaceholders(step.url, item, env);
         const requestNumber = counter + 1;
         const requestStartTime = Date.now();
 
         try {
-          const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-          const headers = { ...buildHeaders(step, currentUrl, step.method), ...bodyHeaders };
+          const stepEnv = await resolveTokenEnv(step, steps, item, env, collectionName, abortController.signal);
+          currentUrl = replacePlaceholders(step.url, item, stepEnv);
+          const { data, headers: bodyHeaders } = buildRequestBody(step, item, stepEnv);
+          const headers = { ...buildHeaders(step, currentUrl, step.method, item, stepEnv), ...bodyHeaders };
+          applyBearerToken(headers, step, stepEnv);
           const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
 
           const response = await axios({
@@ -422,13 +487,15 @@ ipcMain.handle('clear-history-filtered', async (event, filters) => {
 });
 
 // ================== Single Request ==================
-ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment }) => {
-  const env = environment || {};
+ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment, collectionSteps }) => {
+  const baseEnv = environment || {};
   try {
     const item = testData ? JSON.parse(testData) : {};
+    const env = await resolveTokenEnv(step, collectionSteps || [], item, baseEnv, collectionName, undefined);
     const currentUrl = replacePlaceholders(step.url, item, env);
     const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-    const requestHeaders = { ...buildHeaders(step, currentUrl, step.method), ...bodyHeaders };
+    const requestHeaders = { ...buildHeaders(step, currentUrl, step.method, item, env), ...bodyHeaders };
+    applyBearerToken(requestHeaders, step, env);
     const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
 
     const response = await axios({ method: step.method, url: currentUrl, headers: requestHeaders, data });
