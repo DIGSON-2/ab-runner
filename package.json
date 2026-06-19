@@ -6,8 +6,16 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.js\" \"tests/**/*.js\" \"*.config.js\"",
+    "format:check": "prettier --check \"src/**/*.js\" \"tests/**/*.js\" \"*.config.js\"",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "build": "electron-builder",
     "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
     "release": "electron-builder --win --publish always"
   },
   "repository": {
@@ -31,14 +39,26 @@
       "main.js",
       "preload.js",
       "renderer.html",
-      "renderer.js",
       "style.css",
+      "src/**/*",
+      "assets/**/*",
       "package.json",
       "node_modules/**/*"
     ],
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
     },
     "nsis": {
       "oneClick": false,
@@ -59,6 +79,11 @@
   },
   "devDependencies": {
     "electron": "^42.2.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^15.15.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.6.2"
   }
 }
