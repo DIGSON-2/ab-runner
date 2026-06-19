@@ -793,19 +793,6 @@ body {
   border-color: var(--accent);
 }
 
-.step-card.step-flash {
-  animation: stepFlash 1.2s ease-out;
-}
-
-@keyframes stepFlash {
-  0% {
-    box-shadow: 0 0 0 2px var(--accent);
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
 .folder-children {
   margin-left: 12px;
   padding-left: 10px;

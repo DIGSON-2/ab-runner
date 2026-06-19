@@ -27,7 +27,6 @@ window.perf = perf;
 let data = { folders: [], collections: [], environments: [], openTabs: [] };
 let activeCollectionId = null;
 let activeCollection = null;
-let activeTabStepId = null;
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
@@ -1292,6 +1291,7 @@ function selectCollection(id) {
   if (!activeCollection) return;
   renderCollectionEditor();
   renderTree();
+  touchOpenTab(id);
 }
 function showEmptyState() {
   collectionEditorEl.style.display = 'none';
@@ -1329,45 +1329,24 @@ function generateUniqueId() {
   return id;
 }
 
-// ================== Open-request tabs ==================
-function generateStepId() {
-  const used = new Set();
-  data.collections.forEach((c) => (c.steps || []).forEach((s) => s.id && used.add(s.id)));
-  let id = 'st' + Date.now().toString(36);
-  while (used.has(id)) id += Math.random().toString(36).slice(2, 5);
-  return id;
+// ================== Open-collection tabs ==================
+function collectionExists(id) {
+  return data.collections.some((c) => c.id === id);
 }
-function tabRefExists({ stepId, collectionId }) {
-  const col = data.collections.find((c) => c.id === collectionId);
-  return !!col && (col.steps || []).some((s) => s.id === stepId);
-}
-function touchOpenTab(step) {
-  if (!step || !activeCollection) return;
-  if (!step.id) step.id = generateStepId();
-  data.openTabs = touchTab(data.openTabs || [], {
-    stepId: step.id,
-    collectionId: activeCollection.id,
-  });
-  activeTabStepId = step.id;
+function touchOpenTab(collectionId) {
+  if (!collectionId) return;
+  data.openTabs = touchTab(data.openTabs || [], collectionId);
   renderTabStrip();
   debouncedSave();
 }
-function openStepFromTab(tab) {
-  activeTabStepId = tab.stepId;
-  if (activeCollectionId !== tab.collectionId) selectCollection(tab.collectionId);
+function openTabFromTab(id) {
+  if (activeCollectionId !== id) selectCollection(id);
   else renderTabStrip();
-  requestAnimationFrame(() => {
-    const card = stepsContainer.querySelector(`.step-card[data-step-id="${CSS.escape(tab.stepId)}"]`);
-    if (!card) return;
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    card.classList.add('step-flash');
-    setTimeout(() => card.classList.remove('step-flash'), 1200);
-  });
 }
 function renderTabStrip() {
   const strip = document.getElementById('tabStrip');
   if (!strip) return;
-  data.openTabs = pruneTabs(data.openTabs || [], tabRefExists);
+  data.openTabs = pruneTabs(data.openTabs || [], collectionExists);
   const tabs = data.openTabs;
   strip.innerHTML = '';
   if (!tabs.length) {
@@ -1376,20 +1355,22 @@ function renderTabStrip() {
   }
   strip.style.display = 'flex';
   tabs.forEach((t) => {
-    const col = data.collections.find((c) => c.id === t.collectionId);
-    const step = col.steps.find((s) => s.id === t.stepId);
-    const idx = col.steps.indexOf(step);
-    const method = step.method || 'GET';
+    const col = data.collections.find((c) => c.id === t.id);
+    const method = getCollectionMethodBadge(col);
+    const count = (col.steps || []).length;
 
     const el = document.createElement('div');
-    el.className = 'req-tab' + (t.stepId === activeTabStepId ? ' active' : '') + (t.pinned ? ' pinned' : '');
-    el.title = `${method} ${step.url || ''}\n${col.name || ''}`;
-    el.onclick = () => openStepFromTab(t);
+    el.className = 'req-tab' + (t.id === activeCollectionId ? ' active' : '') + (t.pinned ? ' pinned' : '');
+    el.title = `${col.name || 'Без названия'} — ${count} шаг(ов)`;
+    el.onclick = () => openTabFromTab(t.id);
 
-    const badge = txt('span', method, 'req-tab-method method-badge');
-    badge.dataset.method = method;
-    const label = txt('span', step.name || step.url || `Шаг ${idx + 1}`, 'req-tab-label');
-    const colName = txt('span', col.name || '', 'req-tab-col');
+    if (method) {
+      const badge = txt('span', method, 'req-tab-method method-badge');
+      badge.dataset.method = method;
+      el.appendChild(badge);
+    }
+    el.appendChild(txt('span', col.name || 'Без названия', 'req-tab-label'));
+    el.appendChild(txt('span', String(count), 'req-tab-col'));
 
     const pin = document.createElement('button');
     pin.className = 'req-tab-pin';
@@ -1397,7 +1378,7 @@ function renderTabStrip() {
     pin.title = t.pinned ? 'Открепить' : 'Закрепить';
     pin.onclick = (e) => {
       e.stopPropagation();
-      data.openTabs = setPinned(data.openTabs, t.stepId, !t.pinned);
+      data.openTabs = setPinned(data.openTabs, t.id, !t.pinned);
       renderTabStrip();
       debouncedSave();
     };
@@ -1408,13 +1389,12 @@ function renderTabStrip() {
     close.title = 'Закрыть';
     close.onclick = (e) => {
       e.stopPropagation();
-      data.openTabs = closeTab(data.openTabs, t.stepId);
-      if (activeTabStepId === t.stepId) activeTabStepId = null;
+      data.openTabs = closeTab(data.openTabs, t.id);
       renderTabStrip();
       debouncedSave();
     };
 
-    el.append(badge, label, colName, pin, close);
+    el.append(pin, close);
     strip.appendChild(el);
   });
 
@@ -1425,7 +1405,6 @@ function renderTabStrip() {
     clear.title = 'Закрыть все незакреплённые вкладки';
     clear.onclick = () => {
       data.openTabs = closeUnpinned(data.openTabs);
-      if (!data.openTabs.some((t) => t.stepId === activeTabStepId)) activeTabStepId = null;
       renderTabStrip();
       debouncedSave();
     };
@@ -1478,12 +1457,9 @@ function renderSteps() {
   perf.end('renderSteps');
 }
 function createStepCard(step, idx) {
-  if (!step.id) step.id = generateStepId();
   const card = document.createElement('div');
   card.className = 'step-card';
   card.dataset.index = idx;
-  card.dataset.stepId = step.id;
-  card.addEventListener('focusin', () => touchOpenTab(step));
 
   // ================== Header ==================
   const hdr = document.createElement('div');
@@ -1510,13 +1486,8 @@ function createStepCard(step, idx) {
   delB.onclick = async () => {
     if (await confirmDialog('Удалить шаг', 'Удалить этот шаг?')) {
       activeCollection.steps.splice(idx, 1);
-      if (step.id) {
-        data.openTabs = closeTab(data.openTabs || [], step.id);
-        if (activeTabStepId === step.id) activeTabStepId = null;
-      }
       saveData();
       renderSteps();
-      renderTabStrip();
       toast('Шаг удалён', 'success');
     }
   };
@@ -2485,6 +2456,7 @@ runCollectionBtn.addEventListener('click', async () => {
     toast('Добавьте шаги', 'warning');
     return;
   }
+  touchOpenTab(activeCollectionId);
   if (stopCollectionBtn) {
     stopCollectionBtn.style.display = 'flex';
     runCollectionBtn.style.display = 'none';
@@ -2773,7 +2745,6 @@ function extractVariables(step) {
 }
 function openSendModal(step) {
   currentStepForSend = step;
-  touchOpenTab(step);
   sendRequestModal.classList.add('active');
   const infoEl = sendRequestModal.querySelector('.send-modal-step-name');
   if (infoEl) infoEl.textContent = `${step.method || 'GET'} ${step.name || 'Без названия'}`;
@@ -3409,7 +3380,6 @@ if (parseCurlBtn)
       return;
     }
     const ns = {
-      id: generateStepId(),
       name: '',
       url: p.url,
       method: p.method,
@@ -3457,7 +3427,6 @@ newFolderBtn.addEventListener('click', async () => {
 addStepBtn.addEventListener('click', () => {
   if (!activeCollection) return;
   activeCollection.steps.push({
-    id: generateStepId(),
     name: '',
     url: '',
     method: 'GET',
@@ -3543,12 +3512,9 @@ async function loadData() {
       if (c.folderId === undefined) c.folderId = null;
       if (!c.steps) c.steps = [];
       if (!c.results) c.results = [];
-      c.steps.forEach((s) => {
-        if (!s.id) s.id = generateStepId();
-      });
     });
     if (!Array.isArray(data.openTabs)) data.openTabs = [];
-    data.openTabs = pruneTabs(data.openTabs, tabRefExists);
+    data.openTabs = pruneTabs(data.openTabs, collectionExists);
     console.log('✅ Данные загружены:', {
       folders: data.folders.length,
       collections: data.collections.length,
