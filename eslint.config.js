@@ -39,8 +39,11 @@ module.exports = [
     files: ['tests/**/*.js', '**/*.test.js'],
     languageOptions: {
       ecmaVersion: 2022,
-      sourceType: 'commonjs',
+      sourceType: 'module',
       globals: { ...globals.node, ...globals.jest },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
   prettier,
