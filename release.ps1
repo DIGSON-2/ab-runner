@@ -30,7 +30,7 @@ $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 # Коммитим изменения
 git add .
 git commit -m "chore: release v$version"
-# Игнорируем ошибку, если коммитить нечего (хотя npm version всегда меняет файл)
+# Игнорируем ошибку, если коммитить нечего
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[WARN] git commit returned non-zero. Continuing..." -ForegroundColor Yellow
 }
@@ -42,8 +42,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# ВАЖНО: Пушим коммит и тег ОТДЕЛЬНО. 
-# Это гарантирует, что тег точно появится на сервере.
+# Пушим коммит и тег
 Write-Host "Pushing commit..."
 git push origin HEAD
 if ($LASTEXITCODE -ne 0) {
@@ -64,6 +63,11 @@ Write-Host "[OK] Version: v$version, tag pushed" -ForegroundColor Green
 Write-Host ""
 Write-Host "[2/3] Building Windows app..." -ForegroundColor Yellow
 
+# [FIX] Указываем зеркала для обхода таймаутов при скачивании с GitHub
+Write-Host "[MIRROR] Setting npmmirror for Electron and electron-builder binaries..." -ForegroundColor Gray
+$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+$env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
+
 # Очищаем кэш electron-builder, чтобы избежать ошибок с симлинками
 $cachePath = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
 if (Test-Path $cachePath) {
@@ -79,12 +83,12 @@ if ($LASTEXITCODE -ne 0) {
 
 # Ищем собранные файлы
 $exeFile = Get-ChildItem -Path ".\dist" -Filter "*.exe" -ErrorAction SilentlyContinue |
-Where-Object { $_.Name -notmatch "blockmap" -and $_.Name -notmatch "uninstaller" } |
-Sort-Object LastWriteTime -Descending |
-Select-Object -First 1
+    Where-Object { $_.Name -notmatch "blockmap" -and $_.Name -notmatch "uninstaller" } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
 
 $blockmapFile = Get-ChildItem -Path ".\dist" -Filter "*.blockmap" -ErrorAction SilentlyContinue |
-Select-Object -First 1
+    Select-Object -First 1
 
 if (-not $exeFile) {
     Write-Host "[ERROR] .exe not found in dist/" -ForegroundColor Red
@@ -116,7 +120,7 @@ if (-not $hasGh) {
 Write-Host ""
 Write-Host "[3/3] Creating GitHub release..." -ForegroundColor Yellow
 
-# 1. Сначала создаем пустой релиз (без файлов)
+# 1. Создаем релиз
 Write-Host "[RELEASE] Creating release v$version..." -ForegroundColor Cyan
 gh release create "v$version" --title "AB Runner v$version" --generate-notes --latest
 if ($LASTEXITCODE -ne 0) {
@@ -124,7 +128,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 2. Загружаем файлы по одному (надежнее для больших .exe)
+# 2. Загружаем файлы
 Write-Host "[UPLOAD] Uploading .exe ($sizeMB MB)..." -ForegroundColor Cyan
 gh release upload "v$version" "$($exeFile.FullName)" --clobber
 if ($LASTEXITCODE -ne 0) {
@@ -136,7 +140,7 @@ if ($blockmapFile) {
     gh release upload "v$version" "$($blockmapFile.FullName)" --clobber
 }
 
-# 3. Загружаем latest.yml (критично для автообновлений!)
+# 3. Загружаем latest.yml
 $latestYml = Get-ChildItem -Path ".\dist" -Filter "latest.yml" -ErrorAction SilentlyContinue
 if ($latestYml) {
     Write-Host "[UPLOAD] Uploading latest.yml (for auto-updates)..." -ForegroundColor Cyan

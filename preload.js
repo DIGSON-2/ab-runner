@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('api', {
     openPostmanFolderDialog: () => ipcRenderer.invoke('open-postman-folder-dialog'),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+    updateRecentCollection: (collectionId, reason) => ipcRenderer.invoke('update-recent-collection', collectionId, reason),
+    getRecentCollections: () => ipcRenderer.invoke('get-recent-collections'),
 
 });
 

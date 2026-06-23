@@ -1,28 +1,9 @@
-import { escapeHtml, txt, debounce } from './utils.js';
+import { escapeHtml, txt, debounce, cachedJsonParse, clearJsonCache } from './utils.js';
 import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
 
-// Performance Monitor
-const perf = {
-  measure(name, fn) {
-    const start = performance.now();
-    const result = fn();
-    const duration = performance.now() - start;
-    console.log(`⏱️ ${name}: ${duration.toFixed(2)}ms`);
-    return result;
-  },
-  start(name) {
-    this[`_start_${name}`] = performance.now();
-  },
-  end(name) {
-    const duration = performance.now() - this[`_start_${name}`];
-    console.log(`⏱️ ${name}: ${duration.toFixed(2)}ms`);
-  },
-};
-// renderer.js – полная исправленная версия
-window.perf = perf;
 let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
 let activeCollection = null;
@@ -35,6 +16,7 @@ let generatedJsonString = '';
 let isRunning = false;
 const stepCardsCache = new Map();
 let lastRenderedCollectionId = null;
+let recentCollections = [];  // Track recent collections
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
@@ -82,6 +64,8 @@ const sidebar = document.getElementById('sidebar');
 const resizer = document.getElementById('resizer');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+const recentCollectionsSection = document.getElementById('recentCollectionsSection');
+const recentCollectionsContainer = document.getElementById('recentCollectionsContainer');
 
 // Environments & Right Panel
 const environmentSelect = document.getElementById('environmentSelect');
@@ -347,6 +331,12 @@ const doSave = async () => {
 
     await saveData();
     lastSavedJson = currentJson;
+
+    // Track collection edit
+    if (activeCollection && activeCollection.name) {
+      window.api.updateRecentCollection(activeCollection.name, 'edited');
+      loadRecentCollections();
+    }
   } catch (e) {
     console.error('Save error:', e);
     toast('Ошибка сохранения: ' + e.message, 'error');
@@ -1048,9 +1038,60 @@ function isDescendant(fid, anc) {
 function renderFolderContents(fid, c, l) {
   renderFolderChildren(fid, c, l);
 }
+
+// ================== Recent Collections ==================
+async function loadRecentCollections() {
+  try {
+    recentCollections = await window.api.getRecentCollections();
+    renderRecentCollections();
+  } catch (e) {
+    console.error('Error loading recent collections:', e);
+  }
+}
+
+function renderRecentCollections() {
+  if (!recentCollections || recentCollections.length === 0) {
+    recentCollectionsSection.style.display = 'none';
+    return;
+  }
+
+  recentCollectionsSection.style.display = 'block';
+  recentCollectionsContainer.innerHTML = '';
+
+  // Show top 8 recent collections
+  const limited = recentCollections.slice(0, 8);
+
+  limited.forEach(recent => {
+    const collection = data.collections?.find(c => c.id === recent.collectionId);
+    if (!collection) return;
+
+    const item = document.createElement('div');
+    item.className = 'recent-item';
+    if (activeCollectionId === collection.id) item.classList.add('active');
+
+    const badge = document.createElement('span');
+    badge.className = 'recent-item-badge';
+    badge.textContent = recent.reason.charAt(0).toUpperCase();
+    badge.title = recent.reason;
+
+    const name = document.createElement('span');
+    name.className = 'recent-item-name';
+    name.textContent = collection.name;
+
+    item.appendChild(badge);
+    item.appendChild(name);
+
+    item.addEventListener('click', () => {
+      selectCollection(collection.id);
+      renderRecentCollections(); // Update highlight
+    });
+
+    recentCollectionsContainer.appendChild(item);
+  });
+}
+
 let treeListeners = false;
 function renderTree() {
-  perf.start('renderTree');
   prepareSearchState();
   treeContainer.innerHTML = '';
   if (searchQuery) {
@@ -1078,7 +1119,6 @@ function renderTree() {
       }
     });
   }
-  perf.end('renderTree');
 }
 function renderSearchResults() {
   const allCollections = data.collections || [];
@@ -1289,6 +1329,11 @@ function selectCollection(id) {
   activeCollectionId = id;
   activeCollection = data.collections.find((c) => c.id === id);
   if (!activeCollection) return;
+
+  // Track collection view
+  window.api.updateRecentCollection(activeCollection.name, 'viewed');
+  loadRecentCollections();
+
   renderCollectionEditor();
   renderTree();
 }
@@ -1442,7 +1487,6 @@ function buildPrereqTab(container, step) {
 
 // ================== Steps ==================
 function renderSteps() {
-  perf.start('renderSteps');
   // Если коллекция та же — ничего не делаем
   if (lastRenderedCollectionId === activeCollection?.id && stepsContainer.children.length > 0) {
     return;
@@ -1482,7 +1526,6 @@ function renderSteps() {
       if (editor) editor.refresh();
     });
   });
-  perf.end('renderSteps');
 }
 function createStepCard(step, idx) {
   const card = document.createElement('div');
@@ -3491,7 +3534,7 @@ function readDataFile() {
     const r = new FileReader();
     r.onload = (e) => {
       try {
-        const it = JSON.parse(e.target.result);
+        const it = cachedJsonParse(e.target.result);
         if (!Array.isArray(it)) rej(new Error('Ожидается массив'));
         else res(it);
       } catch (err) {
@@ -3556,6 +3599,7 @@ async function loadData() {
       environments: data.environments.length,
     });
     renderTree();
+    loadRecentCollections();
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();
