@@ -14,7 +14,7 @@ const {
   makeCacheEntry,
   cacheKey,
 } = require('./src/shared/tokenProvider');
-const { executeScript, validateScriptSyntax } = require('./src/shared/scriptRunner');
+const { executeScript } = require('./src/shared/scriptRunner');
 
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';

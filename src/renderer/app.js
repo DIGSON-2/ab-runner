@@ -1,4 +1,4 @@
-import { escapeHtml, txt, debounce, cachedJsonParse, clearJsonCache } from './utils.js';
+import { escapeHtml, txt, debounce, cachedJsonParse } from './utils.js';
 import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
@@ -13,11 +13,9 @@ let searchExpandedFolders = new Set();
 let currentStepForSend = null;
 let fullHistory = [];
 let sidebarWidth = 260;
-let generatedJsonString = '';
-let isRunning = false;
 const stepCardsCache = new Map();
 let lastRenderedCollectionId = null;
-let recentCollections = [];  // Track recent collections
+let recentCollections = []; // Track recent collections
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
@@ -169,16 +167,6 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
   wrapper.appendChild(textarea);
   wrapper.classList.add('theme-' + currentTheme);
   return { wrapper, editor };
-}
-
-function destroyAllEditors() {
-  activeEditors.forEach(({ editor }) => {
-    if (editor && typeof editor.toTextArea === 'function') {
-      const wrapper = editor.getWrapperElement();
-      if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
-    }
-  });
-  activeEditors.clear();
 }
 
 function updateEditorsTheme() {
@@ -347,17 +335,6 @@ const doSave = async () => {
   }
 };
 
-// Принудительное сохранение (для важных действий)
-const forceSave = async () => {
-  if (saveTimeout) clearTimeout(saveTimeout);
-  saveScheduled = false;
-  try {
-    await saveData();
-    lastSavedJson = JSON.stringify(data);
-  } catch (e) {
-    toast('Ошибка сохранения: ' + e.message, 'error');
-  }
-};
 // ================== Sidebar & Resize ==================
 let isResizing = false,
   startX,
@@ -653,49 +630,6 @@ function renderEnvList() {
 }
 
 // ================== Placeholders ==================
-function cleanString(str) {
-  return typeof str !== 'string' ? str : str.replace(/^\uFEFF/, '').replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
-}
-function replacePlaceholders(template, item, environment = {}, options = {}) {
-  if (!template || typeof template !== 'string') return template;
-  const cleaned = cleanString(template);
-  const { toJson = false } = options;
-  const env = environment && typeof environment === 'object' ? environment : {};
-  const dataItem = item && typeof item === 'object' ? item : {};
-  let res = cleaned.replace(/\{\{([^{}]+)\}\}/g, (m, k) => {
-    const key = k.trim();
-    if (key in env) {
-      const v = env[key];
-      if (v == null) return '';
-      if (typeof v === 'object') return toJson ? JSON.stringify(v) : String(v);
-      return String(v);
-    }
-    return m;
-  });
-  res = res.replace(/\{([^{}]+)\}(?!\})/g, (m, path) => {
-    const keys = path.split('.');
-    let val = dataItem,
-      found = true;
-    for (const k of keys) {
-      if (val == null || typeof val !== 'object') {
-        found = false;
-        break;
-      }
-      if (k in val) val = val[k];
-      else {
-        found = false;
-        break;
-      }
-    }
-    if (found && val !== undefined) {
-      if (val == null) return '';
-      if (typeof val === 'object') return toJson ? JSON.stringify(val) : String(val);
-      return String(val);
-    }
-    return m;
-  });
-  return res;
-}
 
 // ================== Postman Import ==================
 async function processPostmanFiles(files) {
@@ -1076,8 +1010,8 @@ function renderRecentCollections() {
   // Show top 8 recent collections
   const limited = recentCollections.slice(0, 8);
 
-  limited.forEach(recent => {
-    const collection = data.collections?.find(c => c.id === recent.collectionId);
+  limited.forEach((recent) => {
+    const collection = data.collections?.find((c) => c.id === recent.collectionId);
     if (!collection) return;
 
     const item = document.createElement('div');
@@ -2209,16 +2143,6 @@ function createStepCard(step, idx) {
   ];
 
   const rawEditorId = 'cm-raw-' + idx + '-' + Date.now();
-  // Кеш DOM элементов body для быстрого переключения
-  const bodyDomCache = {
-    none: null,
-    'form-data': null,
-    urlencoded: null,
-    raw: null,
-    binary: null,
-    graphql: null,
-  };
-  let currentBodyType = step.bodyType;
   bodyTypes.forEach((t) => {
     const lbl = document.createElement('label');
     lbl.className = 'body-type-radio';

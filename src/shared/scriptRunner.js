@@ -15,7 +15,6 @@ async function executeScript(code, context, timeout = 5000) {
   }
 
   return new Promise((resolve) => {
-    let timeoutHandle;
     let resolved = false;
 
     const wrappedCode = `
@@ -49,14 +48,7 @@ async function executeScript(code, context, timeout = 5000) {
       });
 
       // Build the execution function with safe globals
-      const executionFunction = new Function(
-        'pm',
-        'env',
-        'step',
-        'data',
-        'response',
-        wrappedCode
-      );
+      const executionFunction = new Function('pm', 'env', 'step', 'data', 'response', wrappedCode);
 
       // Execute the script
       const result = executionFunction(
@@ -64,7 +56,7 @@ async function executeScript(code, context, timeout = 5000) {
         context.env,
         context.step || {},
         context.data || {},
-        context.response || {}
+        context.response || {},
       );
 
       // Handle both sync and async execution
