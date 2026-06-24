@@ -7,6 +7,7 @@ import { countPostmanRequests } from './postman.js';
 let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
 let activeCollection = null;
+let openTabs = []; // Array of { id, name }
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
@@ -20,6 +21,7 @@ let recentCollections = [];  // Track recent collections
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
+const collectionTabsEl = document.getElementById('collectionTabs');
 const searchInput = document.getElementById('searchInput');
 const emptyStateEl = document.getElementById('emptyState');
 const collectionEditorEl = document.getElementById('collectionEditor');
@@ -333,8 +335,8 @@ const doSave = async () => {
     lastSavedJson = currentJson;
 
     // Track collection edit
-    if (activeCollection && activeCollection.name) {
-      window.api.updateRecentCollection(activeCollection.name, 'edited');
+    if (activeCollection && activeCollection.id) {
+      window.api.updateRecentCollection(activeCollection.id, 'edited');
       loadRecentCollections();
     }
   } catch (e) {
@@ -992,12 +994,25 @@ function renderFolderChildren(folderId, container, level) {
           };
           collect(folder.id);
           const ids = [folder.id, ...toDel];
+
+          const collectionsInFolders = data.collections.filter((c) => ids.includes(c.folderId));
+          const collectionIdsInFolders = collectionsInFolders.map((c) => c.id);
+
           data.collections = data.collections.filter((c) => !ids.includes(c.folderId));
           data.folders = data.folders.filter((f) => !ids.includes(f.id));
-          if (activeCollectionId && !data.collections.find((c) => c.id === activeCollectionId)) {
-            activeCollectionId = null;
-            activeCollection = null;
-            showEmptyState();
+
+          // Remove closed collections from tabs
+          openTabs = openTabs.filter((t) => !collectionIdsInFolders.includes(t.id));
+          renderTabs();
+
+          if (activeCollectionId && collectionIdsInFolders.includes(activeCollectionId)) {
+            if (openTabs.length > 0) {
+              selectCollection(openTabs[0].id);
+            } else {
+              activeCollectionId = null;
+              activeCollection = null;
+              showEmptyState();
+            }
           }
           await saveData();
           renderTree();
@@ -1196,10 +1211,23 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
     e.stopPropagation();
     if (await confirmDialog('Удалить коллекцию', 'Удалить эту коллекцию?')) {
       data.collections = data.collections.filter((c) => c.id !== col.id);
+
+      // Remove from tabs if present
+      const tabIdx = openTabs.findIndex((t) => t.id === col.id);
+      if (tabIdx !== -1) {
+        openTabs.splice(tabIdx, 1);
+        renderTabs();
+      }
+
       if (activeCollectionId === col.id) {
-        activeCollectionId = null;
-        activeCollection = null;
-        showEmptyState();
+        if (openTabs.length > 0) {
+          const nextTab = openTabs[Math.min(tabIdx, openTabs.length - 1)];
+          selectCollection(nextTab.id);
+        } else {
+          activeCollectionId = null;
+          activeCollection = null;
+          showEmptyState();
+        }
       }
       saveData();
       renderTree();
@@ -1330,12 +1358,72 @@ function selectCollection(id) {
   activeCollection = data.collections.find((c) => c.id === id);
   if (!activeCollection) return;
 
+  // Add to tabs if not already there
+  if (!openTabs.find((t) => t.id === id)) {
+    openTabs.push({ id: activeCollection.id, name: activeCollection.name });
+  }
+
   // Track collection view
-  window.api.updateRecentCollection(activeCollection.name, 'viewed');
+  window.api.updateRecentCollection(activeCollection.id, 'viewed');
   loadRecentCollections();
 
   renderCollectionEditor();
+  renderTabs();
   renderTree();
+}
+
+function renderTabs() {
+  if (!collectionTabsEl) return;
+  collectionTabsEl.innerHTML = '';
+
+  if (openTabs.length === 0) {
+    collectionTabsEl.style.display = 'none';
+    return;
+  }
+  collectionTabsEl.style.display = 'flex';
+
+  openTabs.forEach((tab) => {
+    const tabEl = document.createElement('div');
+    tabEl.className = `tab-item${activeCollectionId === tab.id ? ' active' : ''}`;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'tab-name';
+    nameEl.textContent = tab.name || 'Без названия';
+    nameEl.onclick = () => selectCollection(tab.id);
+
+    const closeEl = document.createElement('span');
+    closeEl.className = 'tab-close';
+    closeEl.textContent = '✕';
+    closeEl.onclick = (e) => {
+      e.stopPropagation();
+      closeTab(tab.id);
+    };
+
+    tabEl.append(nameEl, closeEl);
+    collectionTabsEl.appendChild(tabEl);
+  });
+}
+
+function closeTab(id) {
+  const index = openTabs.findIndex((t) => t.id === id);
+  if (index === -1) return;
+
+  openTabs.splice(index, 1);
+
+  if (activeCollectionId === id) {
+    if (openTabs.length > 0) {
+      const nextTab = openTabs[Math.min(index, openTabs.length - 1)];
+      selectCollection(nextTab.id);
+    } else {
+      activeCollectionId = null;
+      activeCollection = null;
+      showEmptyState();
+      renderTabs();
+      renderTree();
+    }
+  } else {
+    renderTabs();
+  }
 }
 function showEmptyState() {
   collectionEditorEl.style.display = 'none';
@@ -1347,6 +1435,11 @@ function renderCollectionEditor() {
   collectionNameInput.value = activeCollection.name || '';
   collectionNameInput.oninput = () => {
     activeCollection.name = collectionNameInput.value.trim() || 'Без названия';
+    // Update tab name if open
+    const tab = openTabs.find((t) => t.id === activeCollection.id);
+    if (tab) tab.name = activeCollection.name;
+    renderTabs();
+
     debouncedSave();
     renderTree();
   };
@@ -1655,7 +1748,8 @@ function createStepCard(step, idx) {
   crt('headers', 'Headers');
   crt('auth', 'Authorization');
   crt('body', 'Body');
-  crt('prereq', 'Pre-request');
+  crt('scripts', 'Scripts');
+  crt('prereq', 'Auth Token (Auto)');
   card.appendChild(tc);
 
   Object.keys(tb).forEach((id) => {
@@ -2020,7 +2114,67 @@ function createStepCard(step, idx) {
   renderAuthForm();
   tbc.auth.appendChild(authContainer);
 
-  // ================== Pre-request Tab (auto-token chaining) ==================
+  // ================== Scripts Tab ==================
+  const scriptsContainer = document.createElement('div');
+  scriptsContainer.className = 'scripts-tabs-container';
+
+  const scriptsTabs = document.createElement('div');
+  scriptsTabs.className = 'sub-tabs';
+  const preBtn = txt('button', 'Pre-request', 'sub-tab-btn active');
+  const postBtn = txt('button', 'Post-response', 'sub-tab-btn');
+  scriptsTabs.append(preBtn, postBtn);
+
+  const preContent = document.createElement('div');
+  preContent.className = 'sub-tab-content active';
+  const postContent = document.createElement('div');
+  postContent.className = 'sub-tab-content';
+
+  if (!step.scripts) {
+    step.scripts = {
+      prerequest: { enabled: true, code: '' },
+      postresponse: { enabled: true, code: '' },
+    };
+  }
+
+  const createScriptEditor = (parent, type) => {
+    const editorId = `cm-script-${type}-${idx}-${Date.now()}`;
+    const textarea = document.createElement('textarea');
+    textarea.value = step.scripts[type].code || '';
+    const { wrapper, editor } = createCodeMirrorEditor(textarea, textarea.value, 'javascript');
+    activeEditors.set(editorId, { editor, wrapper });
+
+    if (editor) {
+      editor.on('change', () => {
+        step.scripts[type].code = editor.getValue();
+        debouncedSave();
+      });
+    }
+    parent.appendChild(wrapper);
+    return { editor };
+  };
+
+  const preEditorInfo = createScriptEditor(preContent, 'prerequest');
+  const postEditorInfo = createScriptEditor(postContent, 'postresponse');
+
+  preBtn.onclick = () => {
+    preBtn.classList.add('active');
+    postBtn.classList.remove('active');
+    preContent.classList.add('active');
+    postContent.classList.remove('active');
+    if (preEditorInfo.editor) preEditorInfo.editor.refresh();
+  };
+  postBtn.onclick = () => {
+    postBtn.classList.add('active');
+    preBtn.classList.remove('active');
+    postContent.classList.add('active');
+    preContent.classList.remove('active');
+    if (postEditorInfo.editor) postEditorInfo.editor.refresh();
+  };
+
+  scriptsContainer.append(scriptsTabs, preContent, postContent);
+  tbc.scripts.appendChild(scriptsContainer);
+
+  // ================== Auth Token (Auto) Tab ==================
   buildPrereqTab(tbc.prereq, step);
 
   // ================== Body Tab ==================

@@ -101,6 +101,13 @@ function createPmApi(stepEnv = {}, callbacks = {}) {
       return await callbacks.runStep(stepId, data);
     },
 
+    async sendRequest(options) {
+      if (!callbacks.sendRequest) {
+        throw new Error('sendRequest is not available in this context');
+      }
+      return await callbacks.sendRequest(options);
+    },
+
     // Logging (safe console output)
     log(...args) {
       if (callbacks.log) {

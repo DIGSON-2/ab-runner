@@ -179,10 +179,80 @@ body {
 
 .main {
   flex: 1;
-  padding: 24px;
-  overflow-y: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   min-width: 0;
   background: var(--bg-primary);
+}
+
+.collection-tabs {
+  display: flex;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  padding: 0 10px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  min-height: 40px;
+  scrollbar-width: none;
+}
+
+.collection-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 200px;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.tab-item:hover {
+  background: rgba(108, 99, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.tab-item.active {
+  background: var(--bg-primary);
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+
+.tab-item .tab-close {
+  opacity: 0;
+  font-size: 14px;
+  padding: 2px;
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+}
+
+.tab-item:hover .tab-close {
+  opacity: 0.6;
+}
+
+.tab-item .tab-close:hover {
+  opacity: 1;
+  background: rgba(231, 76, 60, 0.1);
+  color: var(--danger);
+}
+
+#emptyState,
+#collectionEditor {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
 }
 
 .right-panel {
@@ -374,6 +444,43 @@ body {
   box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.1);
 }
 
+/* Scripts Tabs */
+.sub-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sub-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition-fast);
+  box-shadow: none;
+}
+
+.sub-tab-btn:hover {
+  color: var(--text-primary);
+}
+
+.sub-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.sub-tab-content {
+  display: none;
+}
+
+.sub-tab-content.active {
+  display: block;
+}
+
 /* Recent Collections Section */
 .recent-section {
   padding: 8px 8px;
@@ -400,26 +507,28 @@ body {
 }
 
 .recent-item {
-  padding: 6px 8px;
-  background: var(--bg-card);
+  padding: 8px 10px;
+  background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   transition: all var(--transition-fast);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  margin: 0 4px 4px 4px;
 }
 
 .recent-item:hover {
-  background: var(--accent);
+  background: var(--bg-card);
   border-color: var(--accent);
-  color: white;
+  color: var(--text-primary);
+  transform: translateX(2px);
 }
 
 .recent-item.active {
@@ -661,19 +770,32 @@ body {
 /* ================== 5. TREE ITEMS ================== */
 .folder-item,
 .collection-item {
-  padding: 6px 10px;
-  margin: 2px 0;
-  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 1px 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 400;
+  gap: 10px;
+  font-weight: 500;
   font-size: 13px;
   transition: all var(--transition-fast);
   user-select: none;
-  min-height: 32px;
-  line-height: 1.3;
+  min-height: 36px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.folder-item:hover,
+.collection-item:hover {
+  background: rgba(108, 99, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.collection-item.active {
+  background: var(--accent-gradient);
+  color: white !important;
+  box-shadow: 0 4px 12px rgba(108, 99, 255, 0.3);
 }
 
 .folder-item:hover,
@@ -1057,17 +1179,20 @@ textarea {
 }
 
 .run-bar-controls {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 20px;
-  padding: 20px;
-  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px;
+  align-items: center;
+  background: var(--bg-card);
 }
 
 .run-bar-left {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 16px;
+  flex: 1;
 }
 
 .run-bar-file {
@@ -1110,7 +1235,7 @@ textarea {
 .file-name {
   font-size: 13px;
   color: var(--text-secondary);
-  max-width: 300px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1118,8 +1243,6 @@ textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  flex: 1;
-  min-width: 150px;
 }
 
 .run-bar-delay {
@@ -1165,8 +1288,8 @@ textarea {
 }
 
 #runCollectionBtn {
-  padding: 14px 32px;
-  font-size: 15px;
+  padding: 10px 24px;
+  font-size: 14px;
   font-weight: 600;
   background: var(--accent-gradient);
   color: white;
@@ -1179,7 +1302,6 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 46px;
 }
 
 #runCollectionBtn:hover {
@@ -1192,18 +1314,17 @@ textarea {
 }
 
 .run-bar-progress {
-  padding: 0 20px 20px 20px;
+  padding: 0 16px 16px 16px;
 }
 
 #progress {
   margin: 0;
-  padding: 16px;
+  padding: 12px 16px;
   background: var(--bg-input);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-primary);
-  min-height: 20px;
 }
 
 #progress:empty {
