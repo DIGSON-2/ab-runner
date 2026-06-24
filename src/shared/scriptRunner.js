@@ -45,6 +45,12 @@ async function executeScript(code, context, timeout = 5000) {
           }
           throw new Error('runStep callback not available');
         },
+        sendRequest: async (options) => {
+          if (context.callbacks && context.callbacks.sendRequest) {
+            return await context.callbacks.sendRequest(options);
+          }
+          throw new Error('sendRequest callback not available');
+        },
       });
 
       // Build the execution function with safe globals
