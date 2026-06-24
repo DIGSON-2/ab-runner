@@ -2,57 +2,71 @@
 // Postman-like API for pre/post request scripts
 
 class PMAssert {
-  constructor(value) {
+  constructor(value, testName, pm) {
     this.value = value;
+    this.testName = testName;
+    this.pm = pm;
+  }
+
+  _record(success, error = null) {
+    if (this.pm && this.pm._tests) {
+      this.pm._tests.push({
+        name: this.testName,
+        success,
+        error,
+      });
+    }
+    if (!success && error) {
+      throw new Error(error);
+    }
+    return this;
   }
 
   equal(expected) {
-    if (this.value !== expected) {
-      throw new Error(`Assertion failed: ${JSON.stringify(this.value)} !== ${JSON.stringify(expected)}`);
-    }
-    return this;
+    const success = this.value === expected;
+    return this._record(
+      success,
+      success ? null : `Assertion failed: ${JSON.stringify(this.value)} !== ${JSON.stringify(expected)}`,
+    );
   }
 
   deepEqual(expected) {
-    if (JSON.stringify(this.value) !== JSON.stringify(expected)) {
-      throw new Error(`Deep assertion failed: ${JSON.stringify(this.value)} !== ${JSON.stringify(expected)}`);
-    }
-    return this;
+    const success = JSON.stringify(this.value) === JSON.stringify(expected);
+    return this._record(
+      success,
+      success ? null : `Deep assertion failed: ${JSON.stringify(this.value)} !== ${JSON.stringify(expected)}`,
+    );
   }
 
   match(regex) {
-    if (!regex.test(String(this.value))) {
-      throw new Error(`Regex assertion failed: ${this.value} does not match ${regex}`);
-    }
-    return this;
+    const success = regex.test(String(this.value));
+    return this._record(
+      success,
+      success ? null : `Regex assertion failed: ${this.value} does not match ${regex}`,
+    );
   }
 
   includes(substring) {
-    if (!String(this.value).includes(substring)) {
-      throw new Error(`Includes assertion failed: ${this.value} does not include ${substring}`);
-    }
-    return this;
+    const success = String(this.value).includes(substring);
+    return this._record(
+      success,
+      success ? null : `Includes assertion failed: ${this.value} does not include ${substring}`,
+    );
   }
 
   ok() {
-    if (!this.value) {
-      throw new Error(`Assertion failed: ${this.value} is not truthy`);
-    }
-    return this;
+    const success = !!this.value;
+    return this._record(success, success ? null : `Assertion failed: ${this.value} is not truthy`);
   }
 
   isArray() {
-    if (!Array.isArray(this.value)) {
-      throw new Error(`Assertion failed: ${this.value} is not an array`);
-    }
-    return this;
+    const success = Array.isArray(this.value);
+    return this._record(success, success ? null : `Assertion failed: ${this.value} is not an array`);
   }
 
   isObject() {
-    if (typeof this.value !== 'object' || this.value === null || Array.isArray(this.value)) {
-      throw new Error(`Assertion failed: ${this.value} is not an object`);
-    }
-    return this;
+    const success = typeof this.value === 'object' && this.value !== null && !Array.isArray(this.value);
+    return this._record(success, success ? null : `Assertion failed: ${this.value} is not an object`);
   }
 }
 
@@ -60,7 +74,8 @@ class PMAssert {
 const stepVariables = new Map();
 
 function createPmApi(stepEnv = {}, callbacks = {}) {
-  return {
+  const pm = {
+    _tests: [],
     // Variables
     setVar(name, value) {
       stepVariables.set(name, value);
@@ -80,8 +95,19 @@ function createPmApi(stepEnv = {}, callbacks = {}) {
     },
 
     // Assertions
-    expect(value) {
-      return new PMAssert(value);
+    test(name, fn) {
+      try {
+        fn();
+      } catch (e) {
+        // Error already recorded by expect or is a general script error
+        if (!pm._tests.some((t) => t.name === name)) {
+          pm._tests.push({ name, success: false, error: e.message });
+        }
+      }
+    },
+
+    expect(value, name = 'Assertion') {
+      return new PMAssert(value, name, pm);
     },
 
     // Control flow
@@ -114,7 +140,12 @@ function createPmApi(stepEnv = {}, callbacks = {}) {
         callbacks.log(...args);
       }
     },
+
+    getTests() {
+      return pm._tests;
+    },
   };
+  return pm;
 }
 
 function clearStepVariables() {

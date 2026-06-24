@@ -23,19 +23,21 @@ async function executeScript(code, context, timeout = 5000) {
 })()
 `;
 
+    let pmApi;
     const timeoutHandle2 = setTimeout(() => {
       if (!resolved) {
         resolved = true;
         resolve({
           success: false,
           error: `Script execution timeout (>${timeout}ms)`,
+          tests: pmApi ? pmApi.getTests() : [],
         });
       }
     }, timeout);
 
     try {
       // Create execution context with PM API and data
-      const pmApi = createPmApi(context.env, {
+      pmApi = createPmApi(context.env, {
         log: (...args) => {
           console.log('[Script]', ...args);
         },
@@ -79,6 +81,7 @@ async function executeScript(code, context, timeout = 5000) {
                 success: true,
                 result: asyncResult,
                 env: context.env,
+                tests: pmApi.getTests(),
               });
             }
           })
@@ -86,7 +89,7 @@ async function executeScript(code, context, timeout = 5000) {
             if (!resolved) {
               resolved = true;
               clearTimeout(timeoutHandle2);
-              handleScriptError(err, resolve);
+              handleScriptError(err, resolve, pmApi);
             }
           });
       } else {
@@ -97,6 +100,7 @@ async function executeScript(code, context, timeout = 5000) {
             success: true,
             result,
             env: context.env,
+            tests: pmApi.getTests(),
           });
         }
       }
@@ -104,13 +108,13 @@ async function executeScript(code, context, timeout = 5000) {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeoutHandle2);
-        handleScriptError(err, resolve);
+        handleScriptError(err, resolve, pmApi);
       }
     }
   });
 }
 
-function handleScriptError(err, resolve) {
+function handleScriptError(err, resolve, pmApi) {
   const errorMessage = err.message || String(err);
 
   // Check for control flow signals
@@ -119,6 +123,7 @@ function handleScriptError(err, resolve) {
       success: true,
       skipRequest: true,
       error: null,
+      tests: pmApi ? pmApi.getTests() : [],
     });
   }
 
@@ -128,6 +133,7 @@ function handleScriptError(err, resolve) {
       success: false,
       abortCollection: true,
       error: abortMessage,
+      tests: pmApi ? pmApi.getTests() : [],
     });
   }
 
@@ -136,6 +142,7 @@ function handleScriptError(err, resolve) {
     success: false,
     error: errorMessage,
     stack: err.stack,
+    tests: pmApi ? pmApi.getTests() : [],
   });
 }
 

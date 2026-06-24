@@ -520,6 +520,18 @@ function getAvgTime(requestTimes) {
   return requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0;
 }
 
+// Helper to merge test results
+function mergeTests(existing, newTests) {
+  if (!newTests || !Array.isArray(newTests)) return existing || [];
+  const tests = existing || [];
+  newTests.forEach(nt => {
+    const idx = tests.findIndex(t => t.name === nt.name);
+    if (idx >= 0) tests[idx] = nt;
+    else tests.push(nt);
+  });
+  return tests;
+}
+
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
   if (!Array.isArray(items)) return { success: false, error: 'Данные должны быть массивом' };
 
@@ -601,6 +613,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               Object.assign(stepEnv, scriptResult.env);
               Object.assign(env, scriptResult.env); // Persist to collection run environment
             }
+            if (scriptResult.tests) {
+              step.tests = mergeTests(step.tests, scriptResult.tests);
+            }
           }
 
           const response = await axios({
@@ -646,15 +661,19 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                 Object.assign(stepEnv, scriptResult.env);
                 Object.assign(env, scriptResult.env); // Persist to collection run environment
               }
+              if (scriptResult.tests) {
+                step.tests = mergeTests(step.tests, scriptResult.tests);
+              }
             } catch (scriptErr) {
               console.error('Post-response script execution error:', scriptErr);
             }
           }
 
-          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: headers });
+          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: headers, tests: step.tests });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders: headers, method: step.method, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders: headers, method: step.method, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl }, tests: step.tests });
+          delete step.tests; // Clear for next iteration
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -727,6 +746,7 @@ ipcMain.handle('clear-history-filtered', async (event, filters) => {
 // ================== Single Request ==================
 ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment, collectionSteps }) => {
   const baseEnv = environment || {};
+  let currentTests = [];
   try {
     const item = testData ? JSON.parse(testData) : {};
     const env = await resolveTokenEnv(step, collectionSteps || [], item, baseEnv, collectionName, undefined);
@@ -767,6 +787,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
       }
 
       if (scriptResult.env) Object.assign(env, scriptResult.env);
+      if (scriptResult.tests) currentTests = mergeTests(currentTests, scriptResult.tests);
     }
 
     const response = await axios({ method: step.method, url: currentUrl, headers: requestHeaders, data });
@@ -801,17 +822,18 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
         // Update env with any changes made by script
         if (scriptResult.env) Object.assign(env, scriptResult.env);
+        if (scriptResult.tests) currentTests = mergeTests(currentTests, scriptResult.tests);
       } catch (scriptErr) {
         console.error('Post-response script execution error:', scriptErr);
       }
     }
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders, tests: currentTests });
 
     // Track collection usage
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
-    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders };
+    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders, tests: currentTests };
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 

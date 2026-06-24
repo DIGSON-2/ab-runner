@@ -80,6 +80,7 @@ const newRootCollectionBtn = document.getElementById('newRootCollectionBtn');
 const addStepBtn = document.getElementById('addStepBtn');
 const runCollectionBtn = document.getElementById('runCollectionBtn');
 const stopCollectionBtn = document.getElementById('stopCollectionBtn');
+const exportResultsBtn = document.getElementById('exportResultsBtn');
 const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const clearHistoryFilterBtn = document.getElementById('clearHistoryFilterBtn');
@@ -1528,8 +1529,13 @@ function renderCollectionEditor() {
     renderTree();
     saveTabsState();
   };
-  if (activeCollection.results) renderRunnerTable(activeCollection.results);
-  else runnerResultsBody.innerHTML = '';
+  if (activeCollection.results && activeCollection.results.length > 0) {
+    renderRunnerTable(activeCollection.results);
+    exportResultsBtn.style.display = 'flex';
+  } else {
+    runnerResultsBody.innerHTML = '';
+    exportResultsBtn.style.display = 'none';
+  }
   tabBtns.forEach((b) => b.classList.remove('active'));
   document.querySelector('[data-tab="runner"]').classList.add('active');
   runnerTab.style.display = 'block';
@@ -2812,6 +2818,9 @@ runCollectionBtn.addEventListener('click', async () => {
             </div>
         `;
     toast('Коллекция выполнена', 'success');
+    if (activeCollection.results && activeCollection.results.length > 0) {
+      exportResultsBtn.style.display = 'flex';
+    }
   } catch (e) {
     progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--error-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--danger); margin-top: 12px;">
@@ -2881,6 +2890,7 @@ window.api.onProgress((progressData) => {
     requestBody,
     requestHeaders,
     method,
+    tests,
   } = progressData;
   const row = document.createElement('tr');
   row.className = success ? 'success' : 'error';
@@ -2892,17 +2902,29 @@ window.api.onProgress((progressData) => {
   row.dataset.requestBody = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
   row.dataset.requestHeaders = JSON.stringify(requestHeaders || {});
   row.dataset.method = method || 'GET';
+  row.dataset.tests = JSON.stringify(tests || []);
   row.appendChild(txt('td', `${requestNumber}/${totalRequests}`));
   row.appendChild(txt('td', item));
   row.appendChild(txt('td', stepName));
-  const td3 = document.createElement('td');
+  const tdStatus = document.createElement('td');
   const badge = txt(
     'span',
     success ? `✓ ${status}` : `✗ ${status || 'ERROR'}`,
     `status-badge ${success ? 'status-success' : 'status-error'}`,
   );
-  td3.appendChild(badge);
-  row.appendChild(td3);
+  tdStatus.appendChild(badge);
+  row.appendChild(tdStatus);
+
+  const tdTests = document.createElement('td');
+  if (tests && tests.length > 0) {
+    const passed = tests.filter((t) => t.success).length;
+    const testBadge = txt('span', `${passed}/${tests.length}`, `status-badge ${passed === tests.length ? 'status-success' : 'status-error'}`);
+    tdTests.appendChild(testBadge);
+  } else {
+    tdTests.textContent = '—';
+  }
+  row.appendChild(tdTests);
+
   const td4 = document.createElement('td');
   td4.textContent = `${requestDuration}ms`;
   td4.style.fontFamily = 'monospace';
@@ -2924,6 +2946,7 @@ window.api.onProgress((progressData) => {
       requestBody: row.dataset.requestBody,
       requestHeaders: row.dataset.requestHeaders,
       method: row.dataset.method,
+      tests: row.dataset.tests,
     });
   }
   row.addEventListener('dblclick', () => showResponseDetails(row));
@@ -2952,18 +2975,30 @@ function renderRunnerTable(res) {
     row.dataset.requestBody = r.requestBody || '';
     row.dataset.requestHeaders = r.requestHeaders || '{}';
     row.dataset.method = r.method || 'GET';
+    row.dataset.tests = r.tests || '[]';
     row.appendChild(txt('td', `${index + 1}/${res.length}`));
     row.appendChild(txt('td', r.item || ''));
     row.appendChild(txt('td', r.stepName || ''));
-    const td = document.createElement('td');
-    td.appendChild(
+    const tdStatus = document.createElement('td');
+    tdStatus.appendChild(
       txt(
         'span',
         r.success ? `✓ ${r.status}` : `✗ ${r.status || 'ERROR'}`,
         `status-badge ${r.success ? 'status-success' : 'status-error'}`,
       ),
     );
-    row.appendChild(td);
+    row.appendChild(tdStatus);
+
+    const tdTests = document.createElement('td');
+    const tests = JSON.parse(r.tests || '[]');
+    if (tests && tests.length > 0) {
+      const passed = tests.filter((t) => t.success).length;
+      const testBadge = txt('span', `${passed}/${tests.length}`, `status-badge ${passed === tests.length ? 'status-success' : 'status-error'}`);
+      tdTests.appendChild(testBadge);
+    } else {
+      tdTests.textContent = '—';
+    }
+    row.appendChild(tdTests);
     const tdTime = document.createElement('td');
     tdTime.textContent = r.requestDuration ? `${r.requestDuration}ms` : '—';
     row.appendChild(tdTime);
@@ -3187,6 +3222,7 @@ sendSingleBtn.addEventListener('click', async () => {
       requestBody: res.requestBody,
       requestHeaders: res.requestHeaders,
       method: currentStepForSend.method,
+      tests: res.tests,
       item: `Данные: ${td || '{}'}`,
       stepName: currentStepForSend.name || 'Одиночный запрос',
     });
@@ -3283,6 +3319,17 @@ function renderHistoryRow(e, container) {
     ),
   );
   row.appendChild(ts);
+
+  const tt = document.createElement('td');
+  if (e.tests && e.tests.length > 0) {
+    const passed = e.tests.filter((t) => t.success).length;
+    const testBadge = txt('span', `${passed}/${e.tests.length}`, `status-badge ${passed === e.tests.length ? 'status-success' : 'status-error'}`);
+    tt.appendChild(testBadge);
+  } else {
+    tt.textContent = '—';
+  }
+  row.appendChild(tt);
+
   row.addEventListener('dblclick', () => showHistoryDetail(e));
   container.appendChild(row);
 }
@@ -3295,6 +3342,7 @@ function showHistoryDetail(e) {
     requestBody: e.requestBody,
     requestHeaders: e.requestHeaders,
     method: e.method,
+    tests: e.tests,
     item: e.item,
     stepName: e.stepName,
   });
@@ -3333,7 +3381,7 @@ function formatJsonBlock(data) {
   }
   return `<pre class="${isJ ? 'json-display' : 'text-display'}">${escapeHtml(fmt)}</pre>`;
 }
-function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders, method = 'GET' }) {
+function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders, method = 'GET', tests }) {
   let html = '';
 
   // Header with cURL copy button
@@ -3370,6 +3418,18 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
       if (resp.headers)
         html += `<div class="detail-section"><h3>Заголовки ответа</h3><div class="detail-field-value">${formatJsonBlock(resp.headers)}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.headers, null, 2))}">📋 Копировать</button></div></div>`;
       html += `<div class="detail-section"><h3>Тело ответа</h3><div class="detail-field-value">${formatJsonBlock(resp.data)}<button class="copy-btn" data-copy="${escapeHtml(JSON.stringify(resp.data, null, 2))}">📋 Копировать</button></div></div>`;
+
+      if (tests && tests.length > 0) {
+        html += `<div class="detail-section"><h3>Тесты</h3>`;
+        tests.forEach((t) => {
+          const cls = t.success ? 'success' : 'error';
+          html += `<div class="detail-field">
+            <div class="detail-field-label" style="color:var(--${cls});">${t.success ? '✓' : '✗'} ${escapeHtml(t.name)}</div>
+            <div class="detail-field-value" style="color:var(--${cls});">${t.success ? 'Passed' : escapeHtml(t.error || 'Failed')}</div>
+          </div>`;
+        });
+        html += `</div>`;
+      }
     } catch {
       html += `<div class="detail-section"><h3>Ответ</h3><div class="detail-field-value">${formatJsonBlock(responseData)}</div></div>`;
     }
@@ -3997,3 +4057,54 @@ clearConsoleBtn.addEventListener('click', () => {
 // Init
 loadData();
 showEmptyState();
+
+exportResultsBtn.addEventListener('click', async () => {
+  if (!activeCollection || !activeCollection.results) return;
+
+  const results = activeCollection.results;
+  const fileName = `${activeCollection.name.replace(/[^a-z0-9]/gi, '_')}_results`;
+
+  const format = await new Promise((res) => {
+    const d = document.createElement('div');
+    d.className = 'confirm-dialog show';
+    d.innerHTML = `<div class="confirm-dialog-content">
+      <h3>Экспорт результатов</h3>
+      <p>Выберите формат файла:</p>
+      <div class="confirm-dialog-actions">
+        <button class="secondary csv-btn">CSV</button>
+        <button class="secondary json-btn">JSON</button>
+        <button class="secondary cancel-btn">Отмена</button>
+      </div>
+    </div>`;
+    document.body.appendChild(d);
+    d.querySelector('.csv-btn').onclick = () => { d.remove(); res('csv'); };
+    d.querySelector('.json-btn').onclick = () => { d.remove(); res('json'); };
+    d.querySelector('.cancel-btn').onclick = () => { d.remove(); res(null); };
+  });
+
+  if (!format) return;
+
+  if (format === 'json') {
+    const content = JSON.stringify(results, null, 2);
+    await window.api.saveFile(content, `${fileName}.json`);
+  } else {
+    const headers = ['#', 'Item', 'Step', 'Status', 'Duration (ms)', 'Tests Passed', 'Total Tests', 'Error'];
+    const rows = results.map((r, i) => {
+      const tests = JSON.parse(r.tests || '[]');
+      const passed = tests.filter(t => t.success).length;
+      return [
+        i + 1,
+        `"${r.item.replace(/"/g, '""')}"`,
+        `"${r.stepName.replace(/"/g, '""')}"`,
+        r.status,
+        r.requestDuration,
+        passed,
+        tests.length,
+        `"${(r.error || '').replace(/"/g, '""')}"`
+      ].join(',');
+    });
+    const content = [headers.join(','), ...rows].join('\n');
+    await window.api.saveFile(content, `${fileName}.csv`);
+  }
+  toast('Экспорт завершен', 'success');
+});
