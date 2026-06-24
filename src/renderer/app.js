@@ -8,6 +8,33 @@ let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
 let activeCollection = null;
 let openTabs = []; // Array of { id, name }
+
+function saveTabsState() {
+  localStorage.setItem('ab-runner-open-tabs', JSON.stringify(openTabs));
+  localStorage.setItem('ab-runner-active-tab-id', activeCollectionId || '');
+}
+
+function loadTabsState() {
+  try {
+    const savedTabs = localStorage.getItem('ab-runner-open-tabs');
+    const savedActiveId = localStorage.getItem('ab-runner-active-tab-id');
+
+    if (savedTabs) {
+      openTabs = JSON.parse(savedTabs);
+      // Filter out tabs for collections that might have been deleted
+      openTabs = openTabs.filter((tab) => data.collections.some((c) => c.id === tab.id));
+    }
+
+    if (savedActiveId && data.collections.some((c) => c.id === savedActiveId)) {
+      selectCollection(savedActiveId);
+    } else if (openTabs.length > 0) {
+      selectCollection(openTabs[0].id);
+    }
+  } catch (e) {
+    console.error('Error loading tabs state:', e);
+    openTabs = [];
+  }
+}
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
@@ -1240,10 +1267,16 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
     const n = await showInputModal('Новое название', col.name);
     if (n) {
       col.name = n;
+      // Update tab name if open
+      const tab = openTabs.find((t) => t.id === col.id);
+      if (tab) tab.name = n;
+      renderTabs();
+
       await saveData();
       renderTree();
       if (activeCollectionId === col.id) collectionNameInput.value = col.name;
       toast('Переименовано', 'success');
+      saveTabsState();
     }
   });
   div.addEventListener('dragstart', (e) => {
@@ -1301,10 +1334,16 @@ function renderCollectionItem(col, container, lvl) {
     const n = await showInputModal('Новое название', col.name);
     if (n) {
       col.name = n;
+      // Update tab name if open
+      const tab = openTabs.find((t) => t.id === col.id);
+      if (tab) tab.name = n;
+      renderTabs();
+
       await saveData();
       renderTree();
       if (activeCollectionId === col.id) collectionNameInput.value = col.name;
       toast('Переименовано', 'success');
+      saveTabsState();
     }
   });
   div.addEventListener('dragstart', (e) => {
@@ -1371,6 +1410,7 @@ function selectCollection(id) {
   renderCollectionEditor();
   renderTabs();
   renderTree();
+  saveTabsState();
 }
 
 function renderTabs() {
@@ -1425,6 +1465,7 @@ function closeTab(id) {
   } else {
     renderTabs();
   }
+  saveTabsState();
 }
 function showEmptyState() {
   collectionEditorEl.style.display = 'none';
@@ -1443,6 +1484,7 @@ function renderCollectionEditor() {
 
     debouncedSave();
     renderTree();
+    saveTabsState();
   };
   if (activeCollection.results) renderRunnerTable(activeCollection.results);
   else runnerResultsBody.innerHTML = '';
@@ -3739,6 +3781,7 @@ async function loadData() {
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();
+    loadTabsState();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
     data = { folders: [], collections: [], environments: [] };
