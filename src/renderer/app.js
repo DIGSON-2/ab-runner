@@ -169,6 +169,16 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
   return { wrapper, editor };
 }
 
+function destroyAllEditors() {
+  activeEditors.forEach(({ editor }) => {
+    if (editor && typeof editor.toTextArea === 'function') {
+      const wrapper = editor.getWrapperElement();
+      if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+    }
+  });
+  activeEditors.clear();
+}
+
 function updateEditorsTheme() {
   const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
   activeEditors.forEach(({ editor, wrapper }) => {
@@ -332,6 +342,17 @@ const doSave = async () => {
     toast('Ошибка сохранения: ' + e.message, 'error');
   } finally {
     saveScheduled = false;
+  }
+};
+
+const forceSave = async () => {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveScheduled = false;
+  try {
+    await saveData();
+    lastSavedJson = JSON.stringify(data);
+  } catch (e) {
+    toast('Ошибка сохранения: ' + e.message, 'error');
   }
 };
 
@@ -630,6 +651,52 @@ function renderEnvList() {
 }
 
 // ================== Placeholders ==================
+function cleanString(str) {
+  return typeof str !== 'string'
+    ? str
+    : str.replace(/^\uFEFF/, '').replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
+}
+
+function replacePlaceholders(template, item, environment = {}, options = {}) {
+  if (!template || typeof template !== 'string') return template;
+  const cleaned = cleanString(template);
+  const { toJson = false } = options;
+  const env = environment && typeof environment === 'object' ? environment : {};
+  const dataItem = item && typeof item === 'object' ? item : {};
+  let res = cleaned.replace(/\{\{([^{}]+)\}\}/g, (m, k) => {
+    const key = k.trim();
+    if (key in env) {
+      const v = env[key];
+      if (v == null) return '';
+      if (typeof v === 'object') return toJson ? JSON.stringify(v) : String(v);
+      return String(v);
+    }
+    return m;
+  });
+  res = res.replace(/\{([^{}]+)\}(?!\})/g, (m, path) => {
+    const keys = path.split('.');
+    let val = dataItem,
+      found = true;
+    for (const k of keys) {
+      if (val == null || typeof val !== 'object') {
+        found = false;
+        break;
+      }
+      if (k in val) val = val[k];
+      else {
+        found = false;
+        break;
+      }
+    }
+    if (found && val !== undefined) {
+      if (val == null) return '';
+      if (typeof val === 'object') return toJson ? JSON.stringify(val) : String(val);
+      return String(val);
+    }
+    return m;
+  });
+  return res;
+}
 
 // ================== Postman Import ==================
 async function processPostmanFiles(files) {
@@ -1521,16 +1588,7 @@ function renderSteps() {
 
   // Если коллекция изменилась — сохраняем состояние старых редакторов
   if (lastRenderedCollectionId && lastRenderedCollectionId !== activeCollection?.id) {
-    activeEditors.forEach((info) => {
-      if (info.editor) {
-        try {
-          info.editor.toTextArea();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-    activeEditors.clear();
+    destroyAllEditors();
     stepCardsCache.clear();
   }
 

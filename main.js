@@ -453,6 +453,58 @@ function applyBearerToken(headers, step, stepEnv) {
   if (token) headers['Authorization'] = `Bearer ${token}`;
 }
 
+// ================== Scripting Helpers ==================
+async function runStepHelper(stepId, data, env, allSteps, signal) {
+  const targetStep = (allSteps || []).find((s) => s.id === stepId);
+  if (!targetStep) throw new Error(`Step ${stepId} not found`);
+  const loginUrl = replacePlaceholders(targetStep.url, data, env);
+  const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
+  const loginHeaders = {
+    ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env),
+    ...bodyHeaders,
+  };
+  const res = await axios({
+    method: targetStep.method,
+    url: loginUrl,
+    headers: loginHeaders,
+    data: bodyData,
+    signal,
+    timeout: 30000,
+  });
+  return {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+    data: res.data,
+  };
+}
+
+async function sendRequestHelper(options, signal) {
+  try {
+    const res = await axios({
+      ...options,
+      timeout: options.timeout || 30000,
+      signal,
+    });
+    return {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+      data: res.data,
+    };
+  } catch (err) {
+    if (err.response) {
+      return {
+        status: err.response.status,
+        statusText: err.response.statusText,
+        headers: err.response.headers,
+        data: err.response.data,
+      };
+    }
+    throw err;
+  }
+}
+
 // ================== Run Collection ==================
 let currentRun = null;
 
@@ -511,47 +563,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                 step,
                 data: item,
                 callbacks: {
-                  runStep: async (stepId, data) => {
-                    const targetStep = (steps || []).find((s) => s.id === stepId);
-                    if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                    const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                    const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                    const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                    const res = await axios({
-                      method: targetStep.method,
-                      url: loginUrl,
-                      headers: loginHeaders,
-                      data: bodyData,
-                      signal: abortController.signal,
-                      timeout: 30000,
-                    });
-                    return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-                  },
-                  sendRequest: async (options) => {
-                    try {
-                      const res = await axios({
-                        ...options,
-                        timeout: options.timeout || 30000,
-                        signal: abortController.signal,
-                      });
-                      return {
-                        status: res.status,
-                        statusText: res.statusText,
-                        headers: res.headers,
-                        data: res.data,
-                      };
-                    } catch (err) {
-                      if (err.response) {
-                        return {
-                          status: err.response.status,
-                          statusText: err.response.statusText,
-                          headers: err.response.headers,
-                          data: err.response.data,
-                        };
-                      }
-                      throw err;
-                    }
-                  },
+                  runStep: (stepId, data) =>
+                    runStepHelper(stepId, data, env, steps, abortController.signal),
+                  sendRequest: (options) => sendRequestHelper(options, abortController.signal),
                 },
               },
               step.scripts.prerequest.timeout || 5000
@@ -605,47 +619,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                   data: item,
                   response: response.data,
                   callbacks: {
-                    runStep: async (stepId, data) => {
-                      const targetStep = (steps || []).find((s) => s.id === stepId);
-                      if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                      const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                      const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                      const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                      const res = await axios({
-                        method: targetStep.method,
-                        url: loginUrl,
-                        headers: loginHeaders,
-                        data: bodyData,
-                        signal: abortController.signal,
-                        timeout: 30000,
-                      });
-                      return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-                    },
-                    sendRequest: async (options) => {
-                      try {
-                        const res = await axios({
-                          ...options,
-                          timeout: options.timeout || 30000,
-                          signal: abortController.signal,
-                        });
-                        return {
-                          status: res.status,
-                          statusText: res.statusText,
-                          headers: res.headers,
-                          data: res.data,
-                        };
-                      } catch (err) {
-                        if (err.response) {
-                          return {
-                            status: err.response.status,
-                            statusText: err.response.statusText,
-                            headers: err.response.headers,
-                            data: err.response.data,
-                          };
-                        }
-                        throw err;
-                      }
-                    },
+                    runStep: (stepId, data) =>
+                      runStepHelper(stepId, data, env, steps, abortController.signal),
+                    sendRequest: (options) => sendRequestHelper(options, abortController.signal),
                   },
                 },
                 step.scripts.postresponse.timeout || 5000
@@ -753,19 +729,8 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
           step,
           data: item,
           callbacks: {
-          runStep: async (stepId, data) => {
-            const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
-            if (!targetStep) throw new Error(`Step ${stepId} not found`);
-            const loginUrl = replacePlaceholders(targetStep.url, data, env);
-            const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-            const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-            const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
-            return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-          },
-            sendRequest: async (options) => {
-              const res = await axios({ ...options, timeout: options.timeout || 30000 });
-              return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-            },
+            runStep: (stepId, data) => runStepHelper(stepId, data, env, collectionSteps),
+            sendRequest: (options) => sendRequestHelper(options),
           },
         },
         step.scripts.prerequest.timeout || 5000
@@ -800,19 +765,8 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
             data: item,
             response: response.data,
             callbacks: {
-              runStep: async (stepId, data) => {
-                const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
-                if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
-                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-              },
-              sendRequest: async (options) => {
-                const res = await axios({ ...options, timeout: options.timeout || 30000 });
-                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-              },
+              runStep: (stepId, data) => runStepHelper(stepId, data, env, collectionSteps),
+              sendRequest: (options) => sendRequestHelper(options),
             },
           },
           step.scripts.postresponse.timeout || 5000
