@@ -56,13 +56,16 @@ async function executeScript(code, context, timeout = 5000) {
       // Build the execution function with safe globals
       const executionFunction = new Function('pm', 'env', 'step', 'data', 'response', wrappedCode);
 
+      // Extract response info for simpler access in post-response scripts
+      const responseObj = context.response || {};
+
       // Execute the script
       const result = executionFunction(
         pmApi,
         context.env,
         context.step || {},
         context.data || {},
-        context.response || {},
+        responseObj,
       );
 
       // Handle both sync and async execution

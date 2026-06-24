@@ -1,4 +1,4 @@
-import { escapeHtml, txt, debounce, cachedJsonParse } from './utils.js';
+import { escapeHtml, txt, debounce, cachedJsonParse, toCurl } from './utils.js';
 import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
@@ -63,6 +63,9 @@ const themeNameEl = document.getElementById('themeName');
 const tabBtns = document.querySelectorAll('.tab-btn');
 const runnerTab = document.getElementById('runnerTab');
 const historyTab = document.getElementById('historyTab');
+const consoleTab = document.getElementById('consoleTab');
+const consoleLogContainer = document.getElementById('consoleLogContainer');
+const clearConsoleBtn = document.getElementById('clearConsoleBtn');
 const historyFilter = document.getElementById('historyCollectionFilter');
 const detailModal = document.getElementById('detailModal');
 const detailContent = document.getElementById('detailContent');
@@ -1204,10 +1207,28 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
   const icon = getCollectionIcon(col);
   if (icon) nm.appendChild(document.createTextNode(icon + ' '));
   nm.appendChild(document.createTextNode(col.name || 'Без названия'));
+
+  const dup = document.createElement('button');
+  dup.className = 'secondary';
+  dup.style.cssText = 'padding:2px 6px; font-size:10px; margin-left:4px;';
+  dup.textContent = '📑';
+  dup.title = 'Дублировать коллекцию';
+  dup.onclick = (e) => {
+    e.stopPropagation();
+    const newCol = JSON.parse(JSON.stringify(col));
+    newCol.id = generateUniqueId();
+    newCol.name = (newCol.name || 'Коллекция') + ' (copy)';
+    newCol.results = [];
+    data.collections.push(newCol);
+    saveData();
+    renderTree();
+    toast('Коллекция дублирована', 'success');
+  };
+
   const del = document.createElement('button');
   del.className = 'delete-collection-btn';
   del.textContent = '✕';
-  div.append(nm, del);
+  div.append(nm, dup, del);
   if (folderPath) {
     const pathLabel = document.createElement('div');
     pathLabel.className = 'search-folder-path';
@@ -1307,10 +1328,31 @@ function renderCollectionItem(col, container, lvl) {
   const icon = getCollectionIcon(col);
   if (icon) nm.appendChild(document.createTextNode(icon + ' '));
   nm.appendChild(document.createTextNode(col.name || 'Без названия'));
+
+  const dup = document.createElement('button');
+  dup.className = 'secondary';
+  dup.style.cssText = 'padding:2px 6px; font-size:10px; margin-left:4px; opacity:0; transition:opacity 0.2s;';
+  dup.textContent = '📑';
+  dup.title = 'Дублировать коллекцию';
+  dup.onclick = (e) => {
+    e.stopPropagation();
+    const newCol = JSON.parse(JSON.stringify(col));
+    newCol.id = generateUniqueId();
+    newCol.name = (newCol.name || 'Коллекция') + ' (copy)';
+    newCol.results = [];
+    data.collections.push(newCol);
+    saveData();
+    renderTree();
+    toast('Коллекция дублирована', 'success');
+  };
+  div.addEventListener('mouseenter', () => (dup.style.opacity = '0.7'));
+  div.addEventListener('mouseleave', () => (dup.style.opacity = '0'));
+  dup.addEventListener('mouseenter', () => (dup.style.opacity = '1'));
+
   const del = document.createElement('button');
   del.className = 'delete-collection-btn';
   del.textContent = '✕';
-  div.append(nm, del);
+  div.append(nm, dup, del);
   div.addEventListener('click', (e) => {
     if (e.target.classList.contains('delete-collection-btn')) return;
     selectCollection(col.id);
@@ -1677,6 +1719,21 @@ function createStepCard(step, idx) {
   curlB.title = 'Импорт cURL';
   curlB.onclick = () => importStepFromCurl(step, idx);
 
+  const dupB = document.createElement('button');
+  dupB.className = 'secondary';
+  dupB.style.cssText = 'padding:2px 8px;font-size:12px;';
+  dupB.textContent = '📑';
+  dupB.title = 'Дублировать шаг';
+  dupB.onclick = () => {
+    const newStep = JSON.parse(JSON.stringify(step));
+    newStep.id = generateStepId();
+    newStep.name = (newStep.name || 'Шаг') + ' (copy)';
+    activeCollection.steps.splice(idx + 1, 0, newStep);
+    saveData();
+    renderSteps();
+    toast('Шаг дублирован', 'success');
+  };
+
   const delB = document.createElement('button');
   delB.className = 'danger';
   delB.style.cssText = 'padding:2px 8px;font-size:12px;';
@@ -1690,7 +1747,7 @@ function createStepCard(step, idx) {
     }
   };
 
-  acts.append(sendB, curlB, delB);
+  acts.append(sendB, curlB, dupB, delB);
   hdr.append(nm, acts);
   card.appendChild(hdr);
 
@@ -2821,6 +2878,9 @@ window.api.onProgress((progressData) => {
     elapsedMs,
     etaMs,
     avgRequestTime,
+    requestBody,
+    requestHeaders,
+    method,
   } = progressData;
   const row = document.createElement('tr');
   row.className = success ? 'success' : 'error';
@@ -2829,6 +2889,9 @@ window.api.onProgress((progressData) => {
   row.dataset.item = item;
   row.dataset.stepName = stepName;
   row.dataset.requestDuration = requestDuration || '';
+  row.dataset.requestBody = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody);
+  row.dataset.requestHeaders = JSON.stringify(requestHeaders || {});
+  row.dataset.method = method || 'GET';
   row.appendChild(txt('td', `${requestNumber}/${totalRequests}`));
   row.appendChild(txt('td', item));
   row.appendChild(txt('td', stepName));
@@ -2858,6 +2921,9 @@ window.api.onProgress((progressData) => {
       error,
       responseData: row.dataset.responseData,
       requestDuration,
+      requestBody: row.dataset.requestBody,
+      requestHeaders: row.dataset.requestHeaders,
+      method: row.dataset.method,
     });
   }
   row.addEventListener('dblclick', () => showResponseDetails(row));
@@ -2883,6 +2949,9 @@ function renderRunnerTable(res) {
     row.dataset.item = r.item;
     row.dataset.stepName = r.stepName;
     row.dataset.requestDuration = r.requestDuration || '';
+    row.dataset.requestBody = r.requestBody || '';
+    row.dataset.requestHeaders = r.requestHeaders || '{}';
+    row.dataset.method = r.method || 'GET';
     row.appendChild(txt('td', `${index + 1}/${res.length}`));
     row.appendChild(txt('td', r.item || ''));
     row.appendChild(txt('td', r.stepName || ''));
@@ -3117,6 +3186,7 @@ sendSingleBtn.addEventListener('click', async () => {
       url: res.url,
       requestBody: res.requestBody,
       requestHeaders: res.requestHeaders,
+      method: currentStepForSend.method,
       item: `Данные: ${td || '{}'}`,
       stepName: currentStepForSend.name || 'Одиночный запрос',
     });
@@ -3224,6 +3294,7 @@ function showHistoryDetail(e) {
     url: e.url,
     requestBody: e.requestBody,
     requestHeaders: e.requestHeaders,
+    method: e.method,
     item: e.item,
     stepName: e.stepName,
   });
@@ -3242,7 +3313,8 @@ function showResponseDetails(row) {
     stepName: row.dataset.stepName,
     url: row.dataset.url,
     requestBody: row.dataset.requestBody,
-    requestHeaders: row.dataset.requestHeaders,
+    requestHeaders: row.dataset.requestHeaders ? JSON.parse(row.dataset.requestHeaders) : null,
+    method: row.dataset.method,
   });
   detailModalTitle.textContent = `Детали: ${row.dataset.stepName}`;
   detailModal.classList.add('active');
@@ -3261,8 +3333,20 @@ function formatJsonBlock(data) {
   }
   return `<pre class="${isJ ? 'json-display' : 'text-display'}">${escapeHtml(fmt)}</pre>`;
 }
-function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders }) {
+function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders, method = 'GET' }) {
   let html = '';
+
+  // Header with cURL copy button
+  const currentUrl = (responseData ? JSON.parse(responseData).url : null) || url;
+  if (currentUrl) {
+    const curlCommand = toCurl(currentUrl, method, requestHeaders, requestBody);
+    const jsonRequest = JSON.stringify({ url: currentUrl, method, headers: requestHeaders, body: requestBody }, null, 2);
+    html += `<div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;">
+      <button class="secondary" style="font-size:11px;" onclick="navigator.clipboard.writeText(\`${escapeHtml(jsonRequest.replace(/`/g, '\\`'))}\`).then(() => toast('JSON запроса скопирован', 'success'))">📦 JSON запроса</button>
+      <button class="secondary" style="font-size:11px;" onclick="navigator.clipboard.writeText(\`${escapeHtml(curlCommand.replace(/`/g, '\\`'))}\`).then(() => toast('cURL скопирован', 'success'))">📋 cURL</button>
+    </div>`;
+  }
+
   if (responseData && responseData !== 'null' && responseData !== 'undefined') {
     try {
       const resp = JSON.parse(responseData);
@@ -3699,6 +3783,7 @@ tabBtns.forEach((b) => {
     b.classList.add('active');
     runnerTab.style.display = b.dataset.tab === 'runner' ? 'block' : 'none';
     historyTab.style.display = b.dataset.tab === 'history' ? 'block' : 'none';
+    consoleTab.style.display = b.dataset.tab === 'console' ? 'block' : 'none';
     if (b.dataset.tab === 'history') loadHistory();
   });
 });
@@ -3879,6 +3964,35 @@ const bodyObs = new MutationObserver((mutations) => {
   });
 });
 bodyObs.observe(document.body, { childList: true });
+
+// Console
+window.api.onScriptLog((data) => {
+  const { stepName, args } = data;
+  const entry = document.createElement('div');
+  entry.className = 'console-entry';
+
+  const header = document.createElement('div');
+  header.className = 'console-entry-header';
+  header.textContent = `[${new Date().toLocaleTimeString()}] ${stepName}`;
+  entry.appendChild(header);
+
+  const content = document.createElement('div');
+  content.className = 'console-entry-content';
+  content.textContent = args
+    .map((arg) => (typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)))
+    .join(' ');
+  entry.appendChild(content);
+
+  consoleLogContainer.appendChild(entry);
+  consoleLogContainer.scrollTop = consoleLogContainer.scrollHeight;
+
+  // Auto-switch to console tab if not already on it and it's an error?
+  // Maybe not to be too intrusive.
+});
+
+clearConsoleBtn.addEventListener('click', () => {
+  consoleLogContainer.innerHTML = '';
+});
 
 // Init
 loadData();

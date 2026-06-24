@@ -56,3 +56,17 @@ export function cachedJsonParse(str) {
 export function clearJsonCache() {
   jsonCache.clear();
 }
+
+export function toCurl(url, method, headers, body) {
+  let curl = `curl -X ${method} "${url}"`;
+  if (headers) {
+    Object.entries(headers).forEach(([k, v]) => {
+      curl += ` -H "${k}: ${v}"`;
+    });
+  }
+  if (body) {
+    const data = typeof body === 'string' ? body : JSON.stringify(body);
+    curl += ` -d '${data.replace(/'/g, "'\\''")}'`;
+  }
+  return curl;
+}

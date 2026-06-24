@@ -563,6 +563,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                 step,
                 data: item,
                 callbacks: {
+                  log: (...args) => sendToRenderer('script-log', { stepName, args }),
                   runStep: (stepId, data) =>
                     runStepHelper(stepId, data, env, steps, abortController.signal),
                   sendRequest: (options) => sendRequestHelper(options, abortController.signal),
@@ -596,7 +597,10 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
             }
 
             // Update env with any changes made by script
-            if (scriptResult.env) Object.assign(stepEnv, scriptResult.env);
+            if (scriptResult.env) {
+              Object.assign(stepEnv, scriptResult.env);
+              Object.assign(env, scriptResult.env); // Persist to collection run environment
+            }
           }
 
           const response = await axios({
@@ -617,8 +621,14 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                   env: stepEnv,
                   step,
                   data: item,
-                  response: response.data,
+                  response: {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers,
+                    data: response.data,
+                  },
                   callbacks: {
+                    log: (...args) => sendToRenderer('script-log', { stepName, args }),
                     runStep: (stepId, data) =>
                       runStepHelper(stepId, data, env, steps, abortController.signal),
                     sendRequest: (options) => sendRequestHelper(options, abortController.signal),
@@ -630,6 +640,12 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               if (!scriptResult.success) {
                 console.error('Post-response script error:', scriptResult.error);
               }
+
+              // Update env with any changes made by script
+              if (scriptResult.env) {
+                Object.assign(stepEnv, scriptResult.env);
+                Object.assign(env, scriptResult.env); // Persist to collection run environment
+              }
             } catch (scriptErr) {
               console.error('Post-response script execution error:', scriptErr);
             }
@@ -638,7 +654,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: headers });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders: headers, method: step.method, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -649,7 +665,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status, success: false, error: e.message, responseData: e.response?.data, responseHeaders: e.response?.headers });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null, requestBody: e.config?.data, requestHeaders: e.config?.headers, method: step.method });
         }
 
         if (delay > 0) {
@@ -729,6 +745,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
           step,
           data: item,
           callbacks: {
+            log: (...args) => sendToRenderer('script-log', { stepName: step.name || 'Single Request', args }),
             runStep: (stepId, data) => runStepHelper(stepId, data, env, collectionSteps),
             sendRequest: (options) => sendRequestHelper(options),
           },
@@ -763,8 +780,14 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
             env,
             step,
             data: item,
-            response: response.data,
+            response: {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+              data: response.data,
+            },
             callbacks: {
+              log: (...args) => sendToRenderer('script-log', { stepName: step.name || 'Single Request', args }),
               runStep: (stepId, data) => runStepHelper(stepId, data, env, collectionSteps),
               sendRequest: (options) => sendRequestHelper(options),
             },
@@ -775,6 +798,9 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
         if (!scriptResult.success) {
           console.error('Post-response script error:', scriptResult.error);
         }
+
+        // Update env with any changes made by script
+        if (scriptResult.env) Object.assign(env, scriptResult.env);
       } catch (scriptErr) {
         console.error('Post-response script execution error:', scriptErr);
       }
