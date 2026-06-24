@@ -3,6 +3,7 @@ import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
+import { touchTab, closeTab, closeUnpinned, setPinned, pruneTabs } from './tabs.js';
 
 let data = { folders: [], collections: [], environments: [] };
 let activeCollectionId = null;
@@ -1370,6 +1371,7 @@ function selectCollection(id) {
   renderCollectionEditor();
   renderTabs();
   renderTree();
+  touchOpenTab(id);
 }
 
 function renderTabs() {
@@ -1576,6 +1578,89 @@ function buildPrereqTab(container, step) {
   sync();
   wrap.appendChild(fields);
   container.appendChild(wrap);
+}
+
+// ================== Open-collection tabs ==================
+function collectionExists(id) {
+  return data.collections.some((c) => c.id === id);
+}
+function touchOpenTab(collectionId) {
+  if (!collectionId) return;
+  data.openTabs = touchTab(data.openTabs || [], collectionId);
+  renderTabStrip();
+  debouncedSave();
+}
+function openTabFromTab(id) {
+  if (activeCollectionId !== id) selectCollection(id);
+  else renderTabStrip();
+}
+function renderTabStrip() {
+  const strip = document.getElementById('tabStrip');
+  if (!strip) return;
+  data.openTabs = pruneTabs(data.openTabs || [], collectionExists);
+  const tabs = data.openTabs;
+  strip.innerHTML = '';
+  if (!tabs.length) {
+    strip.style.display = 'none';
+    return;
+  }
+  strip.style.display = 'flex';
+  tabs.forEach((t) => {
+    const col = data.collections.find((c) => c.id === t.id);
+    const method = getCollectionMethodBadge(col);
+    const count = (col.steps || []).length;
+
+    const el = document.createElement('div');
+    el.className = 'req-tab' + (t.id === activeCollectionId ? ' active' : '') + (t.pinned ? ' pinned' : '');
+    el.title = `${col.name || 'Без названия'} — ${count} шаг(ов)`;
+    el.onclick = () => openTabFromTab(t.id);
+
+    if (method) {
+      const badge = txt('span', method, 'req-tab-method method-badge');
+      badge.dataset.method = method;
+      el.appendChild(badge);
+    }
+    el.appendChild(txt('span', col.name || 'Без названия', 'req-tab-label'));
+    el.appendChild(txt('span', String(count), 'req-tab-col'));
+
+    const pin = document.createElement('button');
+    pin.className = 'req-tab-pin';
+    pin.textContent = t.pinned ? '📌' : '📎';
+    pin.title = t.pinned ? 'Открепить' : 'Закрепить';
+    pin.onclick = (e) => {
+      e.stopPropagation();
+      data.openTabs = setPinned(data.openTabs, t.id, !t.pinned);
+      renderTabStrip();
+      debouncedSave();
+    };
+
+    const close = document.createElement('button');
+    close.className = 'req-tab-close';
+    close.textContent = '×';
+    close.title = 'Закрыть';
+    close.onclick = (e) => {
+      e.stopPropagation();
+      data.openTabs = closeTab(data.openTabs, t.id);
+      renderTabStrip();
+      debouncedSave();
+    };
+
+    el.append(pin, close);
+    strip.appendChild(el);
+  });
+
+  if (tabs.some((t) => !t.pinned)) {
+    const clear = document.createElement('button');
+    clear.className = 'req-tab-clear';
+    clear.textContent = '✕ Закрыть незакреплённые';
+    clear.title = 'Закрыть все незакреплённые вкладки';
+    clear.onclick = () => {
+      data.openTabs = closeUnpinned(data.openTabs);
+      renderTabStrip();
+      debouncedSave();
+    };
+    strip.appendChild(clear);
+  }
 }
 
 // ================== Steps ==================
@@ -2685,6 +2770,7 @@ runCollectionBtn.addEventListener('click', async () => {
     toast('Добавьте шаги', 'warning');
     return;
   }
+  touchOpenTab(activeCollectionId);
   if (stopCollectionBtn) {
     stopCollectionBtn.style.display = 'flex';
     runCollectionBtn.style.display = 'none';
@@ -3747,6 +3833,8 @@ async function loadData() {
         if (!s.id) s.id = generateStepId();
       });
     });
+    if (!Array.isArray(data.openTabs)) data.openTabs = [];
+    data.openTabs = pruneTabs(data.openTabs, collectionExists);
     console.log('✅ Данные загружены:', {
       folders: data.folders.length,
       collections: data.collections.length,
@@ -3757,9 +3845,10 @@ async function loadData() {
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();
+    renderTabStrip();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
-    data = { folders: [], collections: [], environments: [] };
+    data = { folders: [], collections: [], environments: [], openTabs: [] };
     toast('Ошибка загрузки данных', 'error');
   }
 }
