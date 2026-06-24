@@ -61,14 +61,14 @@
           <span>📁 AB Runner</span>
         </div>
 
-        <!-- Окружения -->
-        <div class="environment-selector">
-          <select id="environmentSelect" title="Выберите окружение">
-            <option value="">No Environment</option>
-          </select>
-          <button id="manageEnvBtnGlobal" title="Управление окружениями">⚙️</button>
-          <button id="toggleRightPanelBtn" title="Панель переменных">📋</button>
-        </div>
+            <!-- Недавние коллекции -->
+            <div id="recentCollectionsSection" class="recent-section" style="display: none;">
+                <div class="recent-header">⭐ Недавние</div>
+                <div id="recentCollectionsContainer" class="recent-list"></div>
+            </div>
+
+            <!-- Дерево коллекций -->
+            <div id="treeContainer" class="tree-container"></div>
 
         <!-- Поиск -->
         <div class="sidebar-search">
@@ -83,12 +83,33 @@
           <div class="global-toolbar">
             <button id="globalJsonGeneratorBtn">📝 JSON</button>
 
-            <div class="import-dropdown">
-              <button id="globalImportBtn">📥 Импорт</button>
-              <div id="importDropdownMenu" class="dropdown-menu">
-                <button id="importFilesBtn">📄 Выбрать файлы</button>
-                <button id="importFolderBtn">📁 Выбрать папку</button>
-              </div>
+                <div id="themeToggle" class="theme-toggle" data-tooltip="Тема: Тёмная. Кликните для смены">
+                    <button id="themeToggleBtn" class="theme-icon-btn">🌙</button>
+                    <div id="themeColorIndicator" class="theme-color-indicator"></div>
+                    <span id="themeName" class="theme-label-mini">Тёмная</span>
+                </div>
+
+                <button id="toggleSidebarBtn">Скрыть панель</button>
+            </div>
+        </aside>
+
+        <!-- Разделитель для ресайза -->
+        <div id="resizer" class="resizer"></div>
+
+        <!-- Основная область -->
+        <main class="main">
+            <!-- Вкладки открытых коллекций -->
+            <div id="collectionTabs" class="collection-tabs"></div>
+
+            <!-- Пустое состояние -->
+            <div id="emptyState" class="empty-state">
+                <h2>👈 Выберите или создайте коллекцию</h2>
+                <p>Коллекции содержат шаги (запросы), выполняемые для каждого элемента данных.</p>
+                <div class="empty-state-actions">
+                    <button id="emptyStateNewCollectionBtn" class="secondary">➕ Новая коллекция</button>
+                    <button id="emptyStateJsonGeneratorBtn" class="secondary">📝 Создать JSON данных</button>
+                    <button id="emptyStateImportPostmanBtn" class="secondary">📥 Импорт Postman</button>
+                </div>
             </div>
 
             <button id="newFolderBtn">📁+</button>

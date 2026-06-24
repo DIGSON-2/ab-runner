@@ -8,6 +8,13 @@ const FormData = require('form-data');
 const { stripJsonComments } = require('./src/shared/strings');
 const { replacePlaceholders } = require('./src/shared/placeholders');
 const { buildHeaders } = require('./src/shared/auth');
+const {
+  extractToken,
+  isTokenValid,
+  makeCacheEntry,
+  cacheKey,
+} = require('./src/shared/tokenProvider');
+const { executeScript, validateScriptSyntax } = require('./src/shared/scriptRunner');
 
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';
@@ -216,21 +223,94 @@ function buildRequestBody(step, item, env) {
   }
 }
 
-// ================== History ==================
+// ================== History (Batched) ==================
+let historyWritePending = false;
+let historyWriteTimer = null;
+const HISTORY_BATCH_SIZE = 50;
+const HISTORY_BATCH_MS = 5000;
+
 function loadHistory() {
   try {
-    if (fs.existsSync(historyPath)) history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    if (fs.existsSync(historyPath)) {
+      const raw = fs.readFileSync(historyPath, 'utf8');
+      history = JSON.parse(raw);
+      // Trim history to last 500 entries on load to manage file size
+      if (history.length > 500) {
+        history = history.slice(0, 500);
+        saveHistorySync();
+      }
+    }
   } catch { history = []; }
 }
 
-function saveHistory() {
+function saveHistorySync() {
   try { fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8'); } catch (e) { console.error('Ошибка сохранения истории:', e); }
+}
+
+function scheduleHistorySave() {
+  if (historyWriteTimer) clearTimeout(historyWriteTimer);
+  historyWriteTimer = setTimeout(() => {
+    saveHistorySync();
+    historyWritePending = false;
+    historyWriteTimer = null;
+  }, HISTORY_BATCH_MS);
 }
 
 function addToHistory(entry) {
   history.unshift(entry);
-  saveHistory();
+
+  // Batch: save only every N entries or after timeout
+  if (!historyWritePending || history.length % HISTORY_BATCH_SIZE === 0) {
+    historyWritePending = true;
+    scheduleHistorySave();
+  }
 }
+
+// ================== Recent Collections ==================
+function updateRecentCollection(collectionId, reason = 'viewed') {
+  if (!collectionId) return;
+
+  const data = readData();
+  if (!data.recentCollections) data.recentCollections = [];
+
+  const now = Date.now();
+  const existing = data.recentCollections.findIndex(r => r.collectionId === collectionId);
+
+  if (existing >= 0) {
+    // Update existing entry
+    data.recentCollections[existing].timestamp = now;
+    data.recentCollections[existing].reason = reason;
+  } else {
+    // Add new entry
+    data.recentCollections.push({
+      collectionId,
+      timestamp: now,
+      reason
+    });
+  }
+
+  // Keep only 20 most recent
+  data.recentCollections.sort((a, b) => b.timestamp - a.timestamp);
+  data.recentCollections = data.recentCollections.slice(0, 20);
+
+  writeData(data);
+}
+
+function cleanExpiredRecentCollections(data) {
+  if (!data.recentCollections) return;
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  data.recentCollections = data.recentCollections.filter(r => r.timestamp > thirtyDaysAgo);
+}
+
+ipcMain.handle('update-recent-collection', async (event, collectionId, reason) => {
+  updateRecentCollection(collectionId, reason);
+  return { success: true };
+});
+
+ipcMain.handle('get-recent-collections', async () => {
+  const data = readData();
+  return data.recentCollections || [];
+});
 
 // ================== Data (Async Write) ==================
 function migrateOldData() {
@@ -252,8 +332,24 @@ function readData() {
     if (!d.folders) d.folders = [];
     if (!d.collections) d.collections = [];
     if (!d.environments) d.environments = [];
+    if (!d.recentCollections) d.recentCollections = [];
+    cleanExpiredRecentCollections(d);
+
+    // Initialize scripts field for all steps (backward compatibility)
+    d.collections.forEach(c => {
+      if (!Array.isArray(c.steps)) c.steps = [];
+      c.steps.forEach(step => {
+        if (!step.scripts) {
+          step.scripts = {
+            prerequest: { enabled: false, code: '', timeout: 5000 },
+            postresponse: { enabled: false, code: '', timeout: 5000 }
+          };
+        }
+      });
+    });
+
     return d;
-  } catch { return { folders: [], collections: [], environments: [] }; }
+  } catch { return { folders: [], collections: [], environments: [], recentCollections: [] }; }
 }
 
 let lastWrittenJson = '';
@@ -301,6 +397,62 @@ async function writeData(data) {
 ipcMain.handle('get-data', async () => readData());
 ipcMain.handle('save-data', async (event, d) => { await writeData(d); return { success: true }; });
 
+// ================== Pre-request token chaining ==================
+// Token cache shared across runs and single sends, keyed by scope + variable.
+const tokenCache = new Map();
+
+// Resolve the auto-token for a step, returning an environment augmented with the
+// token variable. Runs the referenced login step (with caching/TTL) only when no
+// valid cached token exists. Throws on misconfiguration so the caller records it
+// as a failed step.
+async function resolveTokenEnv(step, allSteps, item, env, scope, signal) {
+  const cfg = step && step.tokenAuth;
+  if (!cfg || !cfg.enabled) return env;
+
+  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
+  const key = cacheKey(scope, tokenVar);
+  const now = Date.now();
+
+  let token;
+  const cached = tokenCache.get(key);
+  if (isTokenValid(cached, now)) {
+    token = cached.value;
+  } else {
+    const login = (allSteps || []).find((s) => s.id && s.id === cfg.loginStepId);
+    if (!login) throw new Error('Шаг логина для авто-токена не найден');
+    if (login === step) throw new Error('Шаг логина не может ссылаться сам на себя');
+
+    const loginUrl = replacePlaceholders(login.url, item, env);
+    const { data, headers: bodyHeaders } = buildRequestBody(login, item, env);
+    const loginHeaders = { ...buildHeaders(login, loginUrl, login.method), ...bodyHeaders };
+    const resp = await axios({
+      method: login.method,
+      url: loginUrl,
+      headers: loginHeaders,
+      data,
+      signal,
+      timeout: 30000,
+    });
+    token = extractToken(resp.data, cfg.tokenPath);
+    if (token == null) {
+      throw new Error(`Токен не найден по пути "${cfg.tokenPath}" в ответе логина`);
+    }
+    tokenCache.set(key, makeCacheEntry(token, cfg.ttlSeconds ?? 3600, now));
+  }
+
+  const nextEnv = { ...env, [tokenVar]: token };
+  return nextEnv;
+}
+
+// Optionally inject "Authorization: Bearer <token>" when the step opted in.
+function applyBearerToken(headers, step, stepEnv) {
+  const cfg = step && step.tokenAuth;
+  if (!cfg || !cfg.enabled || !cfg.asBearer) return;
+  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
+  const token = stepEnv && stepEnv[tokenVar];
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+}
+
 // ================== Run Collection ==================
 let currentRun = null;
 
@@ -309,6 +461,11 @@ function sendToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
   }
+}
+
+// Calculate average time once per progress update
+function getAvgTime(requestTimes) {
+  return requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0;
 }
 
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
@@ -333,14 +490,100 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
 
         const step = steps[j];
         const stepName = step.name || `Шаг ${j + 1}`;
-        const currentUrl = replacePlaceholders(step.url, item, env);
+        let currentUrl = replacePlaceholders(step.url, item, env);
         const requestNumber = counter + 1;
         const requestStartTime = Date.now();
 
         try {
-          const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-          const headers = { ...buildHeaders(step, currentUrl, step.method), ...bodyHeaders };
+          const stepEnv = await resolveTokenEnv(step, steps, item, env, collectionName, abortController.signal);
+          currentUrl = replacePlaceholders(step.url, item, stepEnv);
+          const { data, headers: bodyHeaders } = buildRequestBody(step, item, stepEnv);
+          const headers = { ...buildHeaders(step, currentUrl, step.method, item, stepEnv), ...bodyHeaders };
+          applyBearerToken(headers, step, stepEnv);
           const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
+
+          // Execute pre-request script if enabled
+          if (step.scripts?.prerequest?.enabled && step.scripts.prerequest.code) {
+            const scriptResult = await executeScript(
+              step.scripts.prerequest.code,
+              {
+                env: stepEnv,
+                step,
+                data: item,
+                callbacks: {
+                  runStep: async (stepId, data) => {
+                    const targetStep = (steps || []).find((s) => s.id === stepId);
+                    if (!targetStep) throw new Error(`Step ${stepId} not found`);
+                    const loginUrl = replacePlaceholders(targetStep.url, data, env);
+                    const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
+                    const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
+                    const res = await axios({
+                      method: targetStep.method,
+                      url: loginUrl,
+                      headers: loginHeaders,
+                      data: bodyData,
+                      signal: abortController.signal,
+                      timeout: 30000,
+                    });
+                    return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+                  },
+                  sendRequest: async (options) => {
+                    try {
+                      const res = await axios({
+                        ...options,
+                        timeout: options.timeout || 30000,
+                        signal: abortController.signal,
+                      });
+                      return {
+                        status: res.status,
+                        statusText: res.statusText,
+                        headers: res.headers,
+                        data: res.data,
+                      };
+                    } catch (err) {
+                      if (err.response) {
+                        return {
+                          status: err.response.status,
+                          statusText: err.response.statusText,
+                          headers: err.response.headers,
+                          data: err.response.data,
+                        };
+                      }
+                      throw err;
+                    }
+                  },
+                },
+              },
+              step.scripts.prerequest.timeout || 5000
+            );
+
+            if (!scriptResult.success) {
+              counter++;
+              const requestDuration = Date.now() - requestStartTime;
+              requestTimes.push(requestDuration);
+              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: 0, success: false, error: `Pre-request script error: ${scriptResult.error}`, responseData: null, responseHeaders: {} });
+              const avgTime = getAvgTime(requestTimes);
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: `Script: ${scriptResult.error}`, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: null });
+              continue;
+            }
+
+            if (scriptResult.skipRequest) {
+              counter++;
+              const requestDuration = Date.now() - requestStartTime;
+              requestTimes.push(requestDuration);
+              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {} });
+              const avgTime = getAvgTime(requestTimes);
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
+              continue;
+            }
+
+            if (scriptResult.abortCollection) {
+              throw new Error(`Collection aborted: ${scriptResult.error}`);
+            }
+
+            // Update env with any changes made by script
+            if (scriptResult.env) Object.assign(stepEnv, scriptResult.env);
+          }
 
           const response = await axios({
             method: step.method, url: currentUrl, headers, data,
@@ -351,10 +594,75 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           const requestDuration = Date.now() - requestStartTime;
           requestTimes.push(requestDuration);
 
+          // Execute post-response script if enabled
+          if (step.scripts?.postresponse?.enabled && step.scripts.postresponse.code) {
+            try {
+              const scriptResult = await executeScript(
+                step.scripts.postresponse.code,
+                {
+                  env: stepEnv,
+                  step,
+                  data: item,
+                  response: response.data,
+                  callbacks: {
+                    runStep: async (stepId, data) => {
+                      const targetStep = (steps || []).find((s) => s.id === stepId);
+                      if (!targetStep) throw new Error(`Step ${stepId} not found`);
+                      const loginUrl = replacePlaceholders(targetStep.url, data, env);
+                      const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
+                      const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
+                      const res = await axios({
+                        method: targetStep.method,
+                        url: loginUrl,
+                        headers: loginHeaders,
+                        data: bodyData,
+                        signal: abortController.signal,
+                        timeout: 30000,
+                      });
+                      return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+                    },
+                    sendRequest: async (options) => {
+                      try {
+                        const res = await axios({
+                          ...options,
+                          timeout: options.timeout || 30000,
+                          signal: abortController.signal,
+                        });
+                        return {
+                          status: res.status,
+                          statusText: res.statusText,
+                          headers: res.headers,
+                          data: res.data,
+                        };
+                      } catch (err) {
+                        if (err.response) {
+                          return {
+                            status: err.response.status,
+                            statusText: err.response.statusText,
+                            headers: err.response.headers,
+                            data: err.response.data,
+                          };
+                        }
+                        throw err;
+                      }
+                    },
+                  },
+                },
+                step.scripts.postresponse.timeout || 5000
+              );
+
+              if (!scriptResult.success) {
+                console.error('Post-response script error:', scriptResult.error);
+              }
+            } catch (scriptErr) {
+              console.error('Post-response script execution error:', scriptErr);
+            }
+          }
+
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: headers });
 
-          const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: Math.round(avgTime), response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          const avgTime = getAvgTime(requestTimes);
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -364,8 +672,8 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
 
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status, success: false, error: e.message, responseData: e.response?.data, responseHeaders: e.response?.headers });
 
-          const avgTime = requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length;
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: Math.round(avgTime), response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
+          const avgTime = getAvgTime(requestTimes);
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
         }
 
         if (delay > 0) {
@@ -380,6 +688,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
     wasCancelled = currentRun?.cancelled || false;
     currentRun = null;
   }
+
+  // Track collection usage
+  updateRecentCollection(collectionName, 'executed');
 
   return { success: !wasCancelled, totalExecuted: counter, totalTime: Date.now() - startTime, avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0, cancelled: wasCancelled };
 });
@@ -417,36 +728,125 @@ ipcMain.handle('clear-history-filtered', async (event, filters) => {
   });
 
   history = filteredHistory;
-  saveHistory();
+  saveHistorySync();
   return { success: true, deleted: beforeCount - filteredHistory.length };
 });
 
 // ================== Single Request ==================
-ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment }) => {
-  const env = environment || {};
+ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment, collectionSteps }) => {
+  const baseEnv = environment || {};
   try {
     const item = testData ? JSON.parse(testData) : {};
+    const env = await resolveTokenEnv(step, collectionSteps || [], item, baseEnv, collectionName, undefined);
     const currentUrl = replacePlaceholders(step.url, item, env);
     const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-    const requestHeaders = { ...buildHeaders(step, currentUrl, step.method), ...bodyHeaders };
+    const requestHeaders = { ...buildHeaders(step, currentUrl, step.method, item, env), ...bodyHeaders };
+    applyBearerToken(requestHeaders, step, env);
     const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
+
+    // Execute pre-request script if enabled
+    if (step.scripts?.prerequest?.enabled && step.scripts.prerequest.code) {
+      const scriptResult = await executeScript(
+        step.scripts.prerequest.code,
+        {
+          env,
+          step,
+          data: item,
+          callbacks: {
+          runStep: async (stepId, data) => {
+            const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
+            if (!targetStep) throw new Error(`Step ${stepId} not found`);
+            const loginUrl = replacePlaceholders(targetStep.url, data, env);
+            const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
+            const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
+            const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
+            return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+          },
+            sendRequest: async (options) => {
+              const res = await axios({ ...options, timeout: options.timeout || 30000 });
+              return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+            },
+          },
+        },
+        step.scripts.prerequest.timeout || 5000
+      );
+
+      if (!scriptResult.success) {
+        if (scriptResult.abortCollection) {
+          throw new Error(`Aborted: ${scriptResult.error}`);
+        }
+        return { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody: null, requestHeaders: {} };
+      }
+
+      if (scriptResult.skipRequest) {
+        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {} });
+        if (collectionName) updateRecentCollection(collectionName, 'executed');
+        return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders };
+      }
+
+      if (scriptResult.env) Object.assign(env, scriptResult.env);
+    }
 
     const response = await axios({ method: step.method, url: currentUrl, headers: requestHeaders, data });
 
+    // Execute post-response script if enabled
+    if (step.scripts?.postresponse?.enabled && step.scripts.postresponse.code) {
+      try {
+        const scriptResult = await executeScript(
+          step.scripts.postresponse.code,
+          {
+            env,
+            step,
+            data: item,
+            response: response.data,
+            callbacks: {
+              runStep: async (stepId, data) => {
+                const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
+                if (!targetStep) throw new Error(`Step ${stepId} not found`);
+                const loginUrl = replacePlaceholders(targetStep.url, data, env);
+                const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
+                const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
+                const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
+                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+              },
+              sendRequest: async (options) => {
+                const res = await axios({ ...options, timeout: options.timeout || 30000 });
+                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+              },
+            },
+          },
+          step.scripts.postresponse.timeout || 5000
+        );
+
+        if (!scriptResult.success) {
+          console.error('Post-response script error:', scriptResult.error);
+        }
+      } catch (scriptErr) {
+        console.error('Post-response script execution error:', scriptErr);
+      }
+    }
+
     addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders });
+
+    // Track collection usage
+    if (collectionName) updateRecentCollection(collectionName, 'executed');
 
     return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders };
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 
     addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers });
+
+    // Track collection usage even on error
+    if (collectionName) updateRecentCollection(collectionName, 'executed');
+
     return err;
   }
 });
 
 // ================== History IPC ==================
 ipcMain.handle('get-history', async () => history);
-ipcMain.handle('clear-history', async () => { history = []; saveHistory(); return { success: true }; });
+ipcMain.handle('clear-history', async () => { history = []; saveHistorySync(); return { success: true }; });
 
 // ================== Save File Dialog ==================
 ipcMain.handle('save-file-dialog', async (event, content, defaultName = 'data.json') => {

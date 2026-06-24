@@ -8,8 +8,8 @@ contextBridge.exposeInMainWorld('api', {
     stopCollection: () => ipcRenderer.invoke('stop-collection'),
     onProgress: (callback) => ipcRenderer.on('progress', (event, data) => callback(data)),
     onStop: (callback) => ipcRenderer.on('collection-stopped', () => callback()),
-    sendSingleRequest: (step, testData, collectionName, environment) =>
-        ipcRenderer.invoke('send-single-request', { step, testData, collectionName, environment }),
+    sendSingleRequest: (step, testData, collectionName, environment, collectionSteps) =>
+        ipcRenderer.invoke('send-single-request', { step, testData, collectionName, environment, collectionSteps }),
     getHistory: () => ipcRenderer.invoke('get-history'),
     clearHistory: () => ipcRenderer.invoke('clear-history'),
     clearHistoryFiltered: (filters) => ipcRenderer.invoke('clear-history-filtered', filters),
@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('api', {
     openPostmanFolderDialog: () => ipcRenderer.invoke('open-postman-folder-dialog'),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+    updateRecentCollection: (collectionId, reason) => ipcRenderer.invoke('update-recent-collection', collectionId, reason),
+    getRecentCollections: () => ipcRenderer.invoke('get-recent-collections'),
 
 });
 

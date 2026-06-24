@@ -27,3 +27,32 @@ export function debounce(fn, d) {
     t = setTimeout(() => fn(...a), d);
   };
 }
+
+// JSON parsing cache (LRU, max 50 entries)
+const jsonCache = new Map();
+const MAX_CACHE_SIZE = 50;
+
+export function cachedJsonParse(str) {
+  if (jsonCache.has(str)) {
+    return jsonCache.get(str);
+  }
+
+  try {
+    const result = JSON.parse(str);
+    jsonCache.set(str, result);
+
+    // Evict oldest entry if cache too large
+    if (jsonCache.size > MAX_CACHE_SIZE) {
+      const firstKey = jsonCache.keys().next().value;
+      jsonCache.delete(firstKey);
+    }
+
+    return result;
+  } catch (e) {
+    throw e;
+  }
+}
+
+export function clearJsonCache() {
+  jsonCache.clear();
+}
