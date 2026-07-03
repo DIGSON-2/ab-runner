@@ -69,6 +69,7 @@ const manageEnvBtnGlobal = document.getElementById('manageEnvBtnGlobal');
 const envManagerModal = document.getElementById('envManagerModal');
 const envListContainer = document.getElementById('envListContainer');
 const newEnvNameInput = document.getElementById('newEnvNameInput');
+const envSearchInput = document.getElementById('envSearchInput');
 const createEnvBtn = document.getElementById('createEnvBtn');
 const closeEnvManagerBtn = document.getElementById('closeEnvManagerBtn');
 const rightPanel = document.getElementById('rightPanel');
@@ -503,28 +504,73 @@ function isFolderVisibleInSearch(fid) {
 }
 
 // ================== Environments ==================
+function ensureEnvironmentShape(env) {
+  if (!env.variables) env.variables = [];
+  env.variables.forEach((v) => {
+    if (v.enabled === undefined) v.enabled = true;
+    if (v.key === undefined) v.key = '';
+    if (v.value === undefined) v.value = '';
+  });
+  return env;
+}
+
 function getActiveEnvironment() {
   if (!data.activeEnvironmentId || !data.environments) return {};
   const env = data.environments.find((e) => e.id === data.activeEnvironmentId);
   if (!env) return {};
+  ensureEnvironmentShape(env);
   const res = {};
   env.variables.forEach((v) => {
     if (v.enabled !== false && v.key) res[v.key] = v.value;
   });
   return res;
 }
+
+function getEnvironmentStats(env) {
+  ensureEnvironmentShape(env);
+  const total = env.variables.length;
+  const enabled = env.variables.filter((v) => v.enabled !== false && v.key).length;
+  return { total, enabled };
+}
+
+function isSecretEnvKey(key) {
+  return /(token|secret|password|passwd|pwd|api[_-]?key|authorization|bearer)/i.test(key || '');
+}
+
+async function copyToClipboard(text, label = 'Скопировано') {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(label, 'success', 1200);
+  } catch {
+    toast('Не удалось скопировать', 'error');
+  }
+}
+
+function makeEnvActionButton(text, title, onClick, className = 'secondary') {
+  const btn = document.createElement('button');
+  btn.className = className;
+  btn.type = 'button';
+  btn.textContent = text;
+  btn.title = title;
+  btn.onclick = onClick;
+  return btn;
+}
+
 function updateEnvironmentSelector() {
   if (!data.environments) data.environments = [];
+  data.environments.forEach(ensureEnvironmentShape);
   environmentSelect.innerHTML = '<option value="">No Environment</option>';
   data.environments.forEach((env) => {
+    const stats = getEnvironmentStats(env);
     const o = document.createElement('option');
     o.value = env.id;
-    o.textContent = env.name;
+    o.textContent = `${env.name} (${stats.enabled}/${stats.total})`;
     environmentSelect.appendChild(o);
   });
   if (data.activeEnvironmentId && data.environments.some((e) => e.id === data.activeEnvironmentId))
     environmentSelect.value = data.activeEnvironmentId;
 }
+
 environmentSelect.addEventListener('change', () => {
   data.activeEnvironmentId = environmentSelect.value || null;
   saveData();
@@ -539,7 +585,16 @@ function renderRightPanel() {
   envVarsContainer.innerHTML = '';
   const envId = data.activeEnvironmentId;
   if (!envId || !data.environments) {
-    envVarsContainer.innerHTML = '<div class="empty-env-msg">Выберите окружение слева</div>';
+    const empty = document.createElement('div');
+    empty.className = 'empty-env-msg';
+    empty.innerHTML = '<strong>Окружение не выбрано</strong><span>Выберите его слева или создайте новое.</span>';
+    empty.appendChild(
+      makeEnvActionButton('+ Создать окружение', 'Создать окружение', () => {
+        envManagerModal.classList.add('active');
+        newEnvNameInput?.focus();
+      }),
+    );
+    envVarsContainer.appendChild(empty);
     return;
   }
   const env = data.environments.find((e) => e.id === envId);
@@ -547,10 +602,50 @@ function renderRightPanel() {
     envVarsContainer.innerHTML = '<div class="empty-env-msg">Окружение не найдено</div>';
     return;
   }
+  ensureEnvironmentShape(env);
+
+  const stats = getEnvironmentStats(env);
+  const head = document.createElement('div');
+  head.className = 'env-panel-summary';
+  const title = document.createElement('div');
+  title.className = 'env-panel-title';
+  title.append(txt('strong', env.name));
+  title.append(txt('span', `${stats.enabled} активных из ${stats.total}`));
+  const actions = document.createElement('div');
+  actions.className = 'env-panel-actions';
+  actions.append(
+    makeEnvActionButton('+', 'Добавить переменную', () => addEnvironmentVariable(env)),
+    makeEnvActionButton('⚙', 'Открыть менеджер окружений', () => {
+      renderEnvList();
+      envManagerModal.classList.add('active');
+    }),
+  );
+  head.append(title, actions);
+  envVarsContainer.appendChild(head);
+
+  if (!env.variables.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-env-msg compact';
+    empty.textContent = 'В этом окружении пока нет переменных.';
+    envVarsContainer.appendChild(empty);
+  }
+
   env.variables.forEach((v, idx) => {
     const row = document.createElement('div');
-    row.className = 'env-var-row';
+    row.className = `env-var-row${v.enabled === false ? ' disabled' : ''}`;
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.className = 'env-var-enabled';
+    enabled.checked = v.enabled !== false;
+    enabled.title = 'Включить переменную';
+    enabled.onchange = () => {
+      env.variables[idx].enabled = enabled.checked;
+      saveData();
+      renderRightPanel();
+      updateEnvironmentSelector();
+    };
     const kIn = document.createElement('input');
+    kIn.className = 'env-var-key';
     kIn.placeholder = 'Ключ';
     kIn.value = v.key || '';
     kIn.addEventListener(
@@ -558,10 +653,13 @@ function renderRightPanel() {
       debounce(() => {
         env.variables[idx].key = kIn.value.trim();
         saveData();
+        updateEnvironmentSelector();
       }, 300),
     );
     const vIn = document.createElement('input');
+    vIn.className = 'env-var-value';
     vIn.placeholder = 'Значение';
+    vIn.type = isSecretEnvKey(v.key) ? 'password' : 'text';
     vIn.value = v.value || '';
     vIn.addEventListener(
       'input',
@@ -570,26 +668,52 @@ function renderRightPanel() {
         saveData();
       }, 300),
     );
+    const copy = makeEnvActionButton('{{}}', `Скопировать {{${v.key || 'key'}}}`, () => {
+      if (!env.variables[idx].key) {
+        toast('Сначала заполните ключ', 'warning');
+        return;
+      }
+      copyToClipboard(`{{${env.variables[idx].key}}}`, 'Плейсхолдер скопирован');
+    });
+    copy.className = 'env-var-copy';
+    const reveal = makeEnvActionButton('👁', 'Показать/скрыть значение', () => {
+      vIn.type = vIn.type === 'password' ? 'text' : 'password';
+    });
+    reveal.className = 'env-var-copy';
     const rm = document.createElement('button');
     rm.className = 'env-var-remove';
     rm.textContent = '✕';
+    rm.title = 'Удалить переменную';
     rm.onclick = () => {
       env.variables.splice(idx, 1);
       saveData();
       renderRightPanel();
+      updateEnvironmentSelector();
     };
-    row.append(kIn, vIn, rm);
+    const rowActions = document.createElement('div');
+    rowActions.className = 'env-var-actions';
+    rowActions.appendChild(copy);
+    if (isSecretEnvKey(v.key)) rowActions.appendChild(reveal);
+    rowActions.appendChild(rm);
+    row.append(enabled, kIn, vIn, rowActions);
     envVarsContainer.appendChild(row);
   });
   const add = document.createElement('button');
   add.className = 'add-env-var-btn';
   add.textContent = '+ Добавить переменную';
-  add.onclick = () => {
-    env.variables.push({ key: '', value: '', enabled: true });
-    saveData();
-    renderRightPanel();
-  };
+  add.onclick = () => addEnvironmentVariable(env);
   envVarsContainer.appendChild(add);
+}
+
+function addEnvironmentVariable(env) {
+  env.variables.push({ key: '', value: '', enabled: true });
+  saveData();
+  renderRightPanel();
+  updateEnvironmentSelector();
+  requestAnimationFrame(() => {
+    const inputs = envVarsContainer.querySelectorAll('.env-var-key');
+    inputs[inputs.length - 1]?.focus();
+  });
 }
 
 // Env Manager Modal
@@ -597,81 +721,145 @@ if (manageEnvBtnGlobal)
   manageEnvBtnGlobal.addEventListener('click', () => {
     renderEnvList();
     envManagerModal.classList.add('active');
+    envSearchInput?.focus();
   });
-if (createEnvBtn)
-  createEnvBtn.addEventListener('click', () => {
-    const name = newEnvNameInput.value.trim();
-    if (!name) {
-      toast('Введите название', 'warning');
-      return;
-    }
-    const newEnv = { id: generateUniqueId(), name, variables: [{ key: '', value: '', enabled: true }] };
-    data.environments.push(newEnv);
-    data.activeEnvironmentId = newEnv.id;
-    saveData().then(() => {
-      newEnvNameInput.value = '';
-      renderEnvList();
-      updateEnvironmentSelector();
-      renderRightPanel();
-      envManagerModal.classList.remove('active');
-      rightPanel.classList.remove('hidden');
-      toast(`Создано: ${name}`, 'success');
-    });
+if (envSearchInput) envSearchInput.addEventListener('input', () => renderEnvList());
+if (createEnvBtn) createEnvBtn.addEventListener('click', () => createEnvironmentFromInput());
+if (newEnvNameInput)
+  newEnvNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createEnvironmentFromInput();
   });
+
+function createEnvironmentFromInput() {
+  const name = newEnvNameInput.value.trim();
+  if (!name) {
+    toast('Введите название', 'warning');
+    return;
+  }
+  if ((data.environments || []).some((e) => e.name.toLowerCase() === name.toLowerCase())) {
+    toast('Окружение с таким названием уже есть', 'warning');
+    return;
+  }
+  const newEnv = { id: generateUniqueId(), name, variables: [{ key: '', value: '', enabled: true }] };
+  data.environments.push(newEnv);
+  data.activeEnvironmentId = newEnv.id;
+  saveData().then(() => {
+    newEnvNameInput.value = '';
+    renderEnvList();
+    updateEnvironmentSelector();
+    renderRightPanel();
+    envManagerModal.classList.remove('active');
+    rightPanel.classList.remove('hidden');
+    toast(`Создано: ${name}`, 'success');
+  });
+}
+
 function renderEnvList() {
   if (!envListContainer) return;
   envListContainer.innerHTML = '';
-  const envs = data.environments || [];
+  const q = (envSearchInput?.value || '').trim().toLowerCase();
+  const envs = (data.environments || []).filter((env) => {
+    ensureEnvironmentShape(env);
+    if (!q) return true;
+    return (
+      (env.name || '').toLowerCase().includes(q) ||
+      env.variables.some((v) => (v.key || '').toLowerCase().includes(q) || (v.value || '').toLowerCase().includes(q))
+    );
+  });
   if (!envs.length) {
-    envListContainer.innerHTML =
-      '<div style="padding:20px;text-align:center;color:var(--text-secondary)">Нет окружений</div>';
+    envListContainer.innerHTML = '<div class="empty-env-msg">Окружения не найдены</div>';
     return;
   }
   envs.forEach((env) => {
+    const stats = getEnvironmentStats(env);
     const div = document.createElement('div');
-    div.className = 'env-manager-item';
+    div.className = `env-manager-item${env.id === data.activeEnvironmentId ? ' active' : ''}`;
     const hdr = document.createElement('div');
     hdr.className = 'env-manager-header';
-    const ttl = document.createElement('span');
-    ttl.textContent = env.name;
-    ttl.style.fontWeight = '600';
+    const ttl = document.createElement('div');
+    ttl.className = 'env-manager-title';
+    ttl.append(txt('strong', env.name));
+    ttl.append(txt('span', `${stats.enabled}/${stats.total} переменных`));
     const acts = document.createElement('div');
-    const selectBtn = document.createElement('button');
-    selectBtn.className = 'secondary';
-    selectBtn.style.cssText = 'font-size:12px;padding:4px 8px;';
-    selectBtn.textContent = '✏️ Редактировать';
-    selectBtn.onclick = () => {
+    const selectBtn = makeEnvActionButton('Открыть', 'Выбрать и открыть переменные', () => {
       data.activeEnvironmentId = env.id;
       environmentSelect.value = env.id;
       saveData().then(() => {
         renderRightPanel();
         updateEnvironmentSelector();
-        envManagerModal.classList.remove('active');
+        renderEnvList();
         rightPanel.classList.remove('hidden');
         toast(`Выбрано: ${env.name}`, 'success');
       });
-    };
-    const del = document.createElement('button');
-    del.className = 'danger';
-    del.style.cssText = 'font-size:12px;padding:4px 8px;';
-    del.textContent = 'Удалить';
-    del.onclick = async () => {
-      if (await confirmDialog('Удалить окружение', `Удалить "${env.name}"?`)) {
-        data.environments = data.environments.filter((e) => e.id !== env.id);
-        if (data.activeEnvironmentId === env.id) {
-          data.activeEnvironmentId = null;
-          environmentSelect.value = '';
-        }
-        saveData().then(() => {
-          renderEnvList();
-          updateEnvironmentSelector();
-          renderRightPanel();
-        });
+    });
+    const rename = makeEnvActionButton('Переименовать', 'Переименовать окружение', async () => {
+      const next = await showInputModal('Новое название окружения', env.name);
+      if (!next || next === env.name) return;
+      if ((data.environments || []).some((e) => e.id !== env.id && e.name.toLowerCase() === next.toLowerCase())) {
+        toast('Окружение с таким названием уже есть', 'warning');
+        return;
       }
-    };
-    acts.append(selectBtn, del);
+      env.name = next;
+      saveData().then(() => {
+        updateEnvironmentSelector();
+        renderEnvList();
+        renderRightPanel();
+        toast('Окружение переименовано', 'success');
+      });
+    });
+    const duplicate = makeEnvActionButton('Дублировать', 'Создать копию окружения', () => {
+      const copy = {
+        id: generateUniqueId(),
+        name: `${env.name} copy`,
+        variables: env.variables.map((v) => ({ ...v })),
+      };
+      data.environments.push(copy);
+      data.activeEnvironmentId = copy.id;
+      saveData().then(() => {
+        updateEnvironmentSelector();
+        renderEnvList();
+        renderRightPanel();
+        rightPanel.classList.remove('hidden');
+        toast('Копия окружения создана', 'success');
+      });
+    });
+    const copyAll = makeEnvActionButton('Copy JSON', 'Скопировать переменные как JSON', () => {
+      const vars = {};
+      env.variables.forEach((v) => {
+        if (v.key) vars[v.key] = v.value || '';
+      });
+      copyToClipboard(JSON.stringify(vars, null, 2), 'JSON окружения скопирован');
+    });
+    const del = makeEnvActionButton(
+      'Удалить',
+      'Удалить окружение',
+      async () => {
+        if (await confirmDialog('Удалить окружение', `Удалить "${env.name}"?`)) {
+          data.environments = data.environments.filter((e) => e.id !== env.id);
+          if (data.activeEnvironmentId === env.id) {
+            data.activeEnvironmentId = null;
+            environmentSelect.value = '';
+          }
+          saveData().then(() => {
+            renderEnvList();
+            updateEnvironmentSelector();
+            renderRightPanel();
+          });
+        }
+      },
+      'danger',
+    );
+    acts.append(selectBtn, rename, duplicate, copyAll, del);
     hdr.append(ttl, acts);
     div.appendChild(hdr);
+    const preview = document.createElement('div');
+    preview.className = 'env-manager-preview';
+    const keys = env.variables
+      .filter((v) => v.key)
+      .slice(0, 6)
+      .map((v) => `{{${v.key}}}`);
+    preview.textContent = keys.length ? keys.join('  ') : 'Нет переменных';
+    div.appendChild(preview);
     envListContainer.appendChild(div);
   });
 }
