@@ -8,13 +8,7 @@ const FormData = require('form-data');
 const { stripJsonComments } = require('./src/shared/strings');
 const { replacePlaceholders } = require('./src/shared/placeholders');
 const { buildHeaders } = require('./src/shared/auth');
-const {
-  extractToken,
-  isTokenValid,
-  makeCacheEntry,
-  cacheKey,
-} = require('./src/shared/tokenProvider');
-const { executeScript, validateScriptSyntax } = require('./src/shared/scriptRunner');
+const { executeScript } = require('./src/shared/scriptRunner');
 
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';
@@ -138,6 +132,8 @@ ipcMain.handle('check-for-updates', async () => {
   if (!app.isPackaged) return { success: false, error: 'Not packaged' };
   return await autoUpdater.checkForUpdatesAndNotify();
 });
+
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('quit-and-install', () => {
   autoUpdater.quitAndInstall();
@@ -397,62 +393,6 @@ async function writeData(data) {
 ipcMain.handle('get-data', async () => readData());
 ipcMain.handle('save-data', async (event, d) => { await writeData(d); return { success: true }; });
 
-// ================== Pre-request token chaining ==================
-// Token cache shared across runs and single sends, keyed by scope + variable.
-const tokenCache = new Map();
-
-// Resolve the auto-token for a step, returning an environment augmented with the
-// token variable. Runs the referenced login step (with caching/TTL) only when no
-// valid cached token exists. Throws on misconfiguration so the caller records it
-// as a failed step.
-async function resolveTokenEnv(step, allSteps, item, env, scope, signal) {
-  const cfg = step && step.tokenAuth;
-  if (!cfg || !cfg.enabled) return env;
-
-  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
-  const key = cacheKey(scope, tokenVar);
-  const now = Date.now();
-
-  let token;
-  const cached = tokenCache.get(key);
-  if (isTokenValid(cached, now)) {
-    token = cached.value;
-  } else {
-    const login = (allSteps || []).find((s) => s.id && s.id === cfg.loginStepId);
-    if (!login) throw new Error('Шаг логина для авто-токена не найден');
-    if (login === step) throw new Error('Шаг логина не может ссылаться сам на себя');
-
-    const loginUrl = replacePlaceholders(login.url, item, env);
-    const { data, headers: bodyHeaders } = buildRequestBody(login, item, env);
-    const loginHeaders = { ...buildHeaders(login, loginUrl, login.method), ...bodyHeaders };
-    const resp = await axios({
-      method: login.method,
-      url: loginUrl,
-      headers: loginHeaders,
-      data,
-      signal,
-      timeout: 30000,
-    });
-    token = extractToken(resp.data, cfg.tokenPath);
-    if (token == null) {
-      throw new Error(`Токен не найден по пути "${cfg.tokenPath}" в ответе логина`);
-    }
-    tokenCache.set(key, makeCacheEntry(token, cfg.ttlSeconds ?? 3600, now));
-  }
-
-  const nextEnv = { ...env, [tokenVar]: token };
-  return nextEnv;
-}
-
-// Optionally inject "Authorization: Bearer <token>" when the step opted in.
-function applyBearerToken(headers, step, stepEnv) {
-  const cfg = step && step.tokenAuth;
-  if (!cfg || !cfg.enabled || !cfg.asBearer) return;
-  const tokenVar = (cfg.tokenVar && cfg.tokenVar.trim()) || 'token';
-  const token = stepEnv && stepEnv[tokenVar];
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-}
-
 // ================== Run Collection ==================
 let currentRun = null;
 
@@ -466,6 +406,82 @@ function sendToRenderer(channel, payload) {
 // Calculate average time once per progress update
 function getAvgTime(requestTimes) {
   return requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0;
+}
+
+function serializeRequestBody(data) {
+  return typeof data === 'string' ? data : (data == null ? null : JSON.stringify(data));
+}
+
+function buildStepRequestState(step, item, env) {
+  const url = replacePlaceholders(step.url, item, env);
+  const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
+  return {
+    method: step.method || 'GET',
+    url,
+    headers: { ...buildHeaders(step, url, step.method, item, env), ...bodyHeaders },
+    body: data,
+  };
+}
+
+function applyRequestStatePlaceholders(state, item, env) {
+  state.url = replacePlaceholders(state.url, item, env);
+  Object.keys(state.headers || {}).forEach((key) => {
+    state.headers[key] = replacePlaceholders(state.headers[key], item, env);
+  });
+}
+
+async function sendScriptRequest(options, item, env, signal) {
+  const requestOptions = options || {};
+  const headers = { ...(requestOptions.headers || {}) };
+  const method = requestOptions.method || 'GET';
+  const url = replacePlaceholders(requestOptions.url || '', item, env);
+  const data = requestOptions.data !== undefined ? requestOptions.data : requestOptions.body;
+
+  Object.keys(headers).forEach((key) => {
+    headers[key] = replacePlaceholders(headers[key], item, env);
+  });
+
+  try {
+    const res = await axios({
+      method,
+      url,
+      headers,
+      data,
+      timeout: requestOptions.timeout || 30000,
+      signal,
+    });
+    return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
+  } catch (err) {
+    if (err.response) {
+      return {
+        status: err.response.status,
+        statusText: err.response.statusText,
+        headers: err.response.headers,
+        data: err.response.data,
+      };
+    }
+    throw err;
+  }
+}
+
+async function runStepForScript(stepId, data, steps, env, signal) {
+  const targetStep = (steps || []).find((s) => s.id === stepId);
+  if (!targetStep) throw new Error(`Step ${stepId} not found`);
+  const state = buildStepRequestState(targetStep, data || {}, env);
+  applyRequestStatePlaceholders(state, data || {}, env);
+  return await sendScriptRequest(state, data || {}, env, signal);
+}
+
+function createScriptCallbacks(steps, item, env, signal) {
+  return {
+    runStep: async (stepId, data) => runStepForScript(stepId, data || item || {}, steps, env, signal),
+    sendRequest: async (options) => sendScriptRequest(options, item || {}, env, signal),
+  };
+}
+
+function getScriptCode(step, type) {
+  const code = step?.scripts?.[type]?.code;
+  return code == null || code === 'undefined' ? '' : String(code);
 }
 
 ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
@@ -495,64 +511,21 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         const requestStartTime = Date.now();
 
         try {
-          const stepEnv = await resolveTokenEnv(step, steps, item, env, collectionName, abortController.signal);
-          currentUrl = replacePlaceholders(step.url, item, stepEnv);
-          const { data, headers: bodyHeaders } = buildRequestBody(step, item, stepEnv);
-          const headers = { ...buildHeaders(step, currentUrl, step.method, item, stepEnv), ...bodyHeaders };
-          applyBearerToken(headers, step, stepEnv);
-          const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
+          const stepEnv = env;
+          const requestState = buildStepRequestState(step, item, stepEnv);
+          currentUrl = requestState.url;
 
           // Execute pre-request script if enabled
-          if (step.scripts?.prerequest?.enabled && step.scripts.prerequest.code) {
+          const prerequestCode = getScriptCode(step, 'prerequest');
+          if (prerequestCode) {
             const scriptResult = await executeScript(
-              step.scripts.prerequest.code,
+              prerequestCode,
               {
                 env: stepEnv,
                 step,
                 data: item,
-                callbacks: {
-                  runStep: async (stepId, data) => {
-                    const targetStep = (steps || []).find((s) => s.id === stepId);
-                    if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                    const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                    const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                    const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                    const res = await axios({
-                      method: targetStep.method,
-                      url: loginUrl,
-                      headers: loginHeaders,
-                      data: bodyData,
-                      signal: abortController.signal,
-                      timeout: 30000,
-                    });
-                    return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-                  },
-                  sendRequest: async (options) => {
-                    try {
-                      const res = await axios({
-                        ...options,
-                        timeout: options.timeout || 30000,
-                        signal: abortController.signal,
-                      });
-                      return {
-                        status: res.status,
-                        statusText: res.statusText,
-                        headers: res.headers,
-                        data: res.data,
-                      };
-                    } catch (err) {
-                      if (err.response) {
-                        return {
-                          status: err.response.status,
-                          statusText: err.response.statusText,
-                          headers: err.response.headers,
-                          data: err.response.data,
-                        };
-                      }
-                      throw err;
-                    }
-                  },
-                },
+                request: requestState,
+                callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal),
               },
               step.scripts.prerequest.timeout || 5000
             );
@@ -585,8 +558,15 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
             if (scriptResult.env) Object.assign(stepEnv, scriptResult.env);
           }
 
+          applyRequestStatePlaceholders(requestState, item, stepEnv);
+          currentUrl = requestState.url;
+          const requestBody = serializeRequestBody(requestState.body);
+
           const response = await axios({
-            method: step.method, url: currentUrl, headers, data,
+            method: requestState.method,
+            url: requestState.url,
+            headers: requestState.headers,
+            data: requestState.body,
             signal: abortController.signal, timeout: 30000,
           });
 
@@ -595,58 +575,18 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           requestTimes.push(requestDuration);
 
           // Execute post-response script if enabled
-          if (step.scripts?.postresponse?.enabled && step.scripts.postresponse.code) {
+          const postresponseCode = getScriptCode(step, 'postresponse');
+          if (postresponseCode) {
             try {
               const scriptResult = await executeScript(
-                step.scripts.postresponse.code,
+                postresponseCode,
                 {
                   env: stepEnv,
                   step,
                   data: item,
-                  response: response.data,
-                  callbacks: {
-                    runStep: async (stepId, data) => {
-                      const targetStep = (steps || []).find((s) => s.id === stepId);
-                      if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                      const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                      const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                      const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                      const res = await axios({
-                        method: targetStep.method,
-                        url: loginUrl,
-                        headers: loginHeaders,
-                        data: bodyData,
-                        signal: abortController.signal,
-                        timeout: 30000,
-                      });
-                      return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-                    },
-                    sendRequest: async (options) => {
-                      try {
-                        const res = await axios({
-                          ...options,
-                          timeout: options.timeout || 30000,
-                          signal: abortController.signal,
-                        });
-                        return {
-                          status: res.status,
-                          statusText: res.statusText,
-                          headers: res.headers,
-                          data: res.data,
-                        };
-                      } catch (err) {
-                        if (err.response) {
-                          return {
-                            status: err.response.status,
-                            statusText: err.response.statusText,
-                            headers: err.response.headers,
-                            data: err.response.data,
-                          };
-                        }
-                        throw err;
-                      }
-                    },
-                  },
+                  response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data },
+                  request: requestState,
+                  callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal),
                 },
                 step.scripts.postresponse.timeout || 5000
               );
@@ -659,7 +599,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
             }
           }
 
-          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: headers });
+          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
           const avgTime = getAvgTime(requestTimes);
           sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
@@ -734,110 +674,78 @@ ipcMain.handle('clear-history-filtered', async (event, filters) => {
 
 // ================== Single Request ==================
 ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment, collectionSteps }) => {
-  const baseEnv = environment || {};
+  const env = environment || {};
   try {
     const item = testData ? JSON.parse(testData) : {};
-    const env = await resolveTokenEnv(step, collectionSteps || [], item, baseEnv, collectionName, undefined);
-    const currentUrl = replacePlaceholders(step.url, item, env);
-    const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-    const requestHeaders = { ...buildHeaders(step, currentUrl, step.method, item, env), ...bodyHeaders };
-    applyBearerToken(requestHeaders, step, env);
-    const requestBody = typeof data === 'string' ? data : (data ? JSON.stringify(data) : null);
+    const requestState = buildStepRequestState(step, item, env);
+    let currentUrl = requestState.url;
 
-    // Execute pre-request script if enabled
-    if (step.scripts?.prerequest?.enabled && step.scripts.prerequest.code) {
+    const prerequestCode = getScriptCode(step, 'prerequest');
+    if (prerequestCode) {
       const scriptResult = await executeScript(
-        step.scripts.prerequest.code,
+        prerequestCode,
         {
           env,
           step,
           data: item,
-          callbacks: {
-          runStep: async (stepId, data) => {
-            const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
-            if (!targetStep) throw new Error(`Step ${stepId} not found`);
-            const loginUrl = replacePlaceholders(targetStep.url, data, env);
-            const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-            const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-            const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
-            return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-          },
-            sendRequest: async (options) => {
-              const res = await axios({ ...options, timeout: options.timeout || 30000 });
-              return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-            },
-          },
+          request: requestState,
+          callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined),
         },
         step.scripts.prerequest.timeout || 5000
       );
 
       if (!scriptResult.success) {
-        if (scriptResult.abortCollection) {
-          throw new Error(`Aborted: ${scriptResult.error}`);
-        }
+        if (scriptResult.abortCollection) throw new Error(`Aborted: ${scriptResult.error}`);
         return { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody: null, requestHeaders: {} };
       }
 
       if (scriptResult.skipRequest) {
-        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {} });
+        const requestBody = serializeRequestBody(requestState.body);
+        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
         if (collectionName) updateRecentCollection(collectionName, 'executed');
-        return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders };
+        return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers };
       }
 
       if (scriptResult.env) Object.assign(env, scriptResult.env);
     }
 
-    const response = await axios({ method: step.method, url: currentUrl, headers: requestHeaders, data });
+    applyRequestStatePlaceholders(requestState, item, env);
+    currentUrl = requestState.url;
+    const requestBody = serializeRequestBody(requestState.body);
+    const response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 30000 });
 
-    // Execute post-response script if enabled
-    if (step.scripts?.postresponse?.enabled && step.scripts.postresponse.code) {
+    const postresponseCode = getScriptCode(step, 'postresponse');
+    if (postresponseCode) {
       try {
         const scriptResult = await executeScript(
-          step.scripts.postresponse.code,
+          postresponseCode,
           {
             env,
             step,
             data: item,
-            response: response.data,
-            callbacks: {
-              runStep: async (stepId, data) => {
-                const targetStep = (collectionSteps || []).find((s) => s.id === stepId);
-                if (!targetStep) throw new Error(`Step ${stepId} not found`);
-                const loginUrl = replacePlaceholders(targetStep.url, data, env);
-                const { data: bodyData, headers: bodyHeaders } = buildRequestBody(targetStep, data, env);
-                const loginHeaders = { ...buildHeaders(targetStep, loginUrl, targetStep.method, data, env), ...bodyHeaders };
-                const res = await axios({ method: targetStep.method, url: loginUrl, headers: loginHeaders, data: bodyData, timeout: 30000 });
-                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-              },
-              sendRequest: async (options) => {
-                const res = await axios({ ...options, timeout: options.timeout || 30000 });
-                return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
-              },
-            },
+            request: requestState,
+            response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data },
+            callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined),
           },
           step.scripts.postresponse.timeout || 5000
         );
 
-        if (!scriptResult.success) {
-          console.error('Post-response script error:', scriptResult.error);
-        }
+        if (!scriptResult.success) console.error('Post-response script error:', scriptResult.error);
       } catch (scriptErr) {
         console.error('Post-response script execution error:', scriptErr);
       }
     }
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: currentUrl, method: step.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
-    // Track collection usage
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
-    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders };
+    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers };
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers });
 
-    // Track collection usage even on error
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
     return err;

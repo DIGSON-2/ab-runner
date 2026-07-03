@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
     saveFile: (content, defaultName) => ipcRenderer.invoke('save-file-dialog', content, defaultName),
     openPostmanDialog: () => ipcRenderer.invoke('open-postman-dialog'),
     openPostmanFolderDialog: () => ipcRenderer.invoke('open-postman-folder-dialog'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
     updateRecentCollection: (collectionId, reason) => ipcRenderer.invoke('update-recent-collection', collectionId, reason),

@@ -215,8 +215,18 @@ body {
   font-weight: 500;
   white-space: nowrap;
   max-width: 200px;
+  min-width: 0;
   transition: all var(--transition-fast);
   position: relative;
+}
+
+.tab-name {
+  display: block;
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab-item:hover {
@@ -236,6 +246,7 @@ body {
   padding: 2px;
   border-radius: 4px;
   transition: all var(--transition-fast);
+  flex-shrink: 0;
 }
 
 .tab-item:hover .tab-close {
@@ -376,6 +387,15 @@ body {
   letter-spacing: 0.5px;
 }
 
+.app-version-badge {
+  margin-left: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  vertical-align: middle;
+}
+
 .environment-selector {
   display: flex;
   gap: 6px;
@@ -479,76 +499,6 @@ body {
 
 .sub-tab-content.active {
   display: block;
-}
-
-/* Recent Collections Section */
-.recent-section {
-  padding: 8px 8px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
-}
-
-.recent-header {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 4px 8px;
-  margin-bottom: 4px;
-}
-
-.recent-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 150px;
-  overflow-y: auto;
-}
-
-.recent-item {
-  padding: 8px 10px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: all var(--transition-fast);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 4px 4px 4px;
-}
-
-.recent-item:hover {
-  background: var(--bg-card);
-  border-color: var(--accent);
-  color: var(--text-primary);
-  transform: translateX(2px);
-}
-
-.recent-item.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-  font-weight: 600;
-}
-
-.recent-item-badge {
-  font-size: 10px;
-  padding: 2px 4px;
-  background: rgba(108, 99, 255, 0.3);
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.recent-item-name {
-  flex: 1;
-  min-width: 0;
 }
 
 .tree-container {
@@ -3447,62 +3397,6 @@ body.red-black-theme ::selection {
   background: rgba(243, 156, 18, 0.08);
   border-left-color: var(--warning);
   font-size: 12px;
-}
-
-/* ================== Pre-request Tab (auto-token) ================== */
-.prereq-container {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.prereq-enable {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.prereq-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.prereq-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.prereq-field input,
-.prereq-field select {
-  padding: 10px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-size: 14px;
-}
-
-.prereq-field input:focus,
-.prereq-field select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.1);
-}
-
-.prereq-hint {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.5;
 }
 
 /* ================== Body Tab (Postman-style) ================== */

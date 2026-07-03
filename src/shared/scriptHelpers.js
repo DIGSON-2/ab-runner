@@ -59,8 +59,99 @@ class PMAssert {
 // Shared variable storage for step scripts
 const stepVariables = new Map();
 
-function createPmApi(stepEnv = {}, callbacks = {}) {
+function createHeadersApi(headers = {}) {
   return {
+    all() {
+      return headers;
+    },
+
+    get(name) {
+      const key = Object.keys(headers).find((h) => h.toLowerCase() === String(name).toLowerCase());
+      return key ? headers[key] : undefined;
+    },
+
+    set(name, value) {
+      headers[String(name)] = value == null ? '' : String(value);
+    },
+
+    remove(name) {
+      const key = Object.keys(headers).find((h) => h.toLowerCase() === String(name).toLowerCase());
+      if (key) delete headers[key];
+    },
+
+    has(name) {
+      return this.get(name) !== undefined;
+    },
+  };
+}
+
+function createBodyApi(requestState) {
+  return {
+    get() {
+      return requestState.body;
+    },
+
+    set(value) {
+      requestState.body = value;
+    },
+  };
+}
+
+function createRequestApi(requestState = {}) {
+  if (!requestState.headers) requestState.headers = {};
+  const api = {
+    headers: createHeadersApi(requestState.headers),
+    body: createBodyApi(requestState),
+  };
+
+  Object.defineProperties(api, {
+    url: {
+      get: () => requestState.url,
+      set: (value) => {
+        requestState.url = value;
+      },
+    },
+    method: {
+      get: () => requestState.method,
+      set: (value) => {
+        requestState.method = value;
+      },
+    },
+    data: {
+      get: () => requestState.body,
+      set: (value) => {
+        requestState.body = value;
+      },
+    },
+  });
+
+  return api;
+}
+
+function createPmApi(stepEnv = {}, callbacks = {}, requestState = {}, response = {}) {
+  const envApi = {
+    get(name) {
+      return stepEnv[name];
+    },
+
+    set(name, value) {
+      stepEnv[name] = value;
+    },
+
+    unset(name) {
+      delete stepEnv[name];
+    },
+
+    all() {
+      return stepEnv;
+    },
+  };
+
+  return {
+    env: envApi,
+    request: createRequestApi(requestState),
+    response,
+
     // Variables
     setVar(name, value) {
       stepVariables.set(name, value);
@@ -72,11 +163,11 @@ function createPmApi(stepEnv = {}, callbacks = {}) {
 
     // Environment
     getEnv(name) {
-      return stepEnv[name];
+      return envApi.get(name);
     },
 
     setEnv(name, value) {
-      stepEnv[name] = value;
+      envApi.set(name, value);
     },
 
     // Assertions
@@ -123,6 +214,8 @@ function clearStepVariables() {
 
 module.exports = {
   createPmApi,
+  createHeadersApi,
+  createRequestApi,
   clearStepVariables,
   PMAssert,
 };

@@ -1,4 +1,4 @@
-import { escapeHtml, txt, debounce, cachedJsonParse, clearJsonCache } from './utils.js';
+import { escapeHtml, txt, debounce, cachedJsonParse } from './utils.js';
 import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
@@ -13,11 +13,6 @@ let searchExpandedFolders = new Set();
 let currentStepForSend = null;
 let fullHistory = [];
 let sidebarWidth = 260;
-let generatedJsonString = '';
-let isRunning = false;
-const stepCardsCache = new Map();
-let lastRenderedCollectionId = null;
-let recentCollections = [];  // Track recent collections
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
@@ -66,8 +61,7 @@ const sidebar = document.getElementById('sidebar');
 const resizer = document.getElementById('resizer');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-const recentCollectionsSection = document.getElementById('recentCollectionsSection');
-const recentCollectionsContainer = document.getElementById('recentCollectionsContainer');
+const appVersionBadge = document.getElementById('appVersionBadge');
 
 // Environments & Right Panel
 const environmentSelect = document.getElementById('environmentSelect');
@@ -124,7 +118,9 @@ const importFolderBtn = document.getElementById('importFolderBtn');
 // ================== CodeMirror ==================
 const activeEditors = new Map();
 
-function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript') {
+function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript', height = '180px') {
+  const editorValue = initialValue == null || initialValue === 'undefined' ? '' : String(initialValue);
+  textarea.value = editorValue;
   const wrapper = document.createElement('div');
   wrapper.className = 'cm-wrapper';
   if (typeof CodeMirror === 'undefined') {
@@ -134,7 +130,7 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
   }
   const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
   const editor = CodeMirror(wrapper, {
-    value: initialValue,
+    value: editorValue,
     mode: mode,
     theme: 'default',
     lineNumbers: true,
@@ -164,7 +160,7 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
     textarea.value = editor.getValue();
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  editor.setSize('100%', '180px');
+  editor.setSize('100%', height);
   textarea.style.display = 'none';
   wrapper.appendChild(textarea);
   wrapper.classList.add('theme-' + currentTheme);
@@ -302,6 +298,35 @@ function showInputModal(title, def) {
   });
 }
 
+function truncateName(name, maxLength = 32) {
+  const value = name || 'Без названия';
+  return value.length > maxLength ? value.slice(0, maxLength - 3).trimEnd() + '...' : value;
+}
+
+function normalizeStepScripts(step) {
+  const normalizeScriptConfig = (script) => {
+    if (!script || typeof script !== 'object' || Array.isArray(script)) return { code: '', timeout: 5000 };
+    const rawCode = script.code;
+    const code = rawCode == null || rawCode === 'undefined' ? '' : String(rawCode);
+    return { ...script, code, timeout: script.timeout || 5000 };
+  };
+
+  step.scripts = {
+    prerequest: normalizeScriptConfig(step.scripts?.prerequest),
+    postresponse: normalizeScriptConfig(step.scripts?.postresponse),
+  };
+}
+
+async function renderAppVersion() {
+  if (!appVersionBadge || !window.api.getAppVersion) return;
+  try {
+    const version = await window.api.getAppVersion();
+    appVersionBadge.textContent = `v${version}`;
+  } catch (e) {
+    console.error('Version load error:', e);
+  }
+}
+
 // ================== Умное сохранение ==================
 let saveTimeout = null;
 let saveScheduled = false;
@@ -337,7 +362,6 @@ const doSave = async () => {
     // Track collection edit
     if (activeCollection && activeCollection.id) {
       window.api.updateRecentCollection(activeCollection.id, 'edited');
-      loadRecentCollections();
     }
   } catch (e) {
     console.error('Save error:', e);
@@ -650,51 +674,6 @@ function renderEnvList() {
     div.appendChild(hdr);
     envListContainer.appendChild(div);
   });
-}
-
-// ================== Placeholders ==================
-function cleanString(str) {
-  return typeof str !== 'string' ? str : str.replace(/^\uFEFF/, '').replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
-}
-function replacePlaceholders(template, item, environment = {}, options = {}) {
-  if (!template || typeof template !== 'string') return template;
-  const cleaned = cleanString(template);
-  const { toJson = false } = options;
-  const env = environment && typeof environment === 'object' ? environment : {};
-  const dataItem = item && typeof item === 'object' ? item : {};
-  let res = cleaned.replace(/\{\{([^{}]+)\}\}/g, (m, k) => {
-    const key = k.trim();
-    if (key in env) {
-      const v = env[key];
-      if (v == null) return '';
-      if (typeof v === 'object') return toJson ? JSON.stringify(v) : String(v);
-      return String(v);
-    }
-    return m;
-  });
-  res = res.replace(/\{([^{}]+)\}(?!\})/g, (m, path) => {
-    const keys = path.split('.');
-    let val = dataItem,
-      found = true;
-    for (const k of keys) {
-      if (val == null || typeof val !== 'object') {
-        found = false;
-        break;
-      }
-      if (k in val) val = val[k];
-      else {
-        found = false;
-        break;
-      }
-    }
-    if (found && val !== undefined) {
-      if (val == null) return '';
-      if (typeof val === 'object') return toJson ? JSON.stringify(val) : String(val);
-      return String(val);
-    }
-    return m;
-  });
-  return res;
 }
 
 // ================== Postman Import ==================
@@ -1054,57 +1033,6 @@ function renderFolderContents(fid, c, l) {
   renderFolderChildren(fid, c, l);
 }
 
-// ================== Recent Collections ==================
-async function loadRecentCollections() {
-  try {
-    recentCollections = await window.api.getRecentCollections();
-    renderRecentCollections();
-  } catch (e) {
-    console.error('Error loading recent collections:', e);
-  }
-}
-
-function renderRecentCollections() {
-  if (!recentCollections || recentCollections.length === 0) {
-    recentCollectionsSection.style.display = 'none';
-    return;
-  }
-
-  recentCollectionsSection.style.display = 'block';
-  recentCollectionsContainer.innerHTML = '';
-
-  // Show top 8 recent collections
-  const limited = recentCollections.slice(0, 8);
-
-  limited.forEach(recent => {
-    const collection = data.collections?.find(c => c.id === recent.collectionId);
-    if (!collection) return;
-
-    const item = document.createElement('div');
-    item.className = 'recent-item';
-    if (activeCollectionId === collection.id) item.classList.add('active');
-
-    const badge = document.createElement('span');
-    badge.className = 'recent-item-badge';
-    badge.textContent = recent.reason.charAt(0).toUpperCase();
-    badge.title = recent.reason;
-
-    const name = document.createElement('span');
-    name.className = 'recent-item-name';
-    name.textContent = collection.name;
-
-    item.appendChild(badge);
-    item.appendChild(name);
-
-    item.addEventListener('click', () => {
-      selectCollection(collection.id);
-      renderRecentCollections(); // Update highlight
-    });
-
-    recentCollectionsContainer.appendChild(item);
-  });
-}
-
 let treeListeners = false;
 function renderTree() {
   prepareSearchState();
@@ -1164,7 +1092,7 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
   div.draggable = true;
   const nm = document.createElement('span');
   nm.className = 'collection-name';
-  nm.title = 'Двойной клик для переименования';
+  nm.title = col.name || 'Без названия';
   const badge = getCollectionMethodBadge(col);
   if (badge) {
     const b = document.createElement('span');
@@ -1175,7 +1103,7 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
   }
   const icon = getCollectionIcon(col);
   if (icon) nm.appendChild(document.createTextNode(icon + ' '));
-  nm.appendChild(document.createTextNode(col.name || 'Без названия'));
+  nm.appendChild(document.createTextNode(truncateName(col.name)));
   const del = document.createElement('button');
   del.className = 'delete-collection-btn';
   del.textContent = '✕';
@@ -1261,7 +1189,7 @@ function renderCollectionItem(col, container, lvl) {
   div.style.paddingLeft = lvl * 16 + 'px';
   const nm = document.createElement('span');
   nm.className = 'collection-name';
-  nm.title = 'Двойной клик для переименования';
+  nm.title = col.name || 'Без названия';
   const badge = getCollectionMethodBadge(col);
   if (badge) {
     const b = document.createElement('span');
@@ -1272,7 +1200,7 @@ function renderCollectionItem(col, container, lvl) {
   }
   const icon = getCollectionIcon(col);
   if (icon) nm.appendChild(document.createTextNode(icon + ' '));
-  nm.appendChild(document.createTextNode(col.name || 'Без названия'));
+  nm.appendChild(document.createTextNode(truncateName(col.name)));
   const del = document.createElement('button');
   del.className = 'delete-collection-btn';
   del.textContent = '✕';
@@ -1365,7 +1293,6 @@ function selectCollection(id) {
 
   // Track collection view
   window.api.updateRecentCollection(activeCollection.id, 'viewed');
-  loadRecentCollections();
 
   renderCollectionEditor();
   renderTabs();
@@ -1385,10 +1312,20 @@ function renderTabs() {
   openTabs.forEach((tab) => {
     const tabEl = document.createElement('div');
     tabEl.className = `tab-item${activeCollectionId === tab.id ? ' active' : ''}`;
+    tabEl.title = tab.name || 'Без названия';
+    tabEl.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    tabEl.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(tab.id);
+      }
+    });
 
     const nameEl = document.createElement('span');
     nameEl.className = 'tab-name';
-    nameEl.textContent = tab.name || 'Без названия';
+    nameEl.textContent = truncateName(tab.name);
     nameEl.onclick = () => selectCollection(tab.id);
 
     const closeEl = document.createElement('span');
@@ -1475,130 +1412,9 @@ function generateStepId() {
   return id;
 }
 
-// Build the "Pre-request" tab UI for declarative auto-token chaining.
-function buildPrereqTab(container, step) {
-  if (!step.tokenAuth || typeof step.tokenAuth !== 'object') {
-    step.tokenAuth = {
-      enabled: false,
-      loginStepId: '',
-      tokenPath: '',
-      tokenVar: 'token',
-      ttlSeconds: 3600,
-      asBearer: false,
-    };
-  }
-  const cfg = step.tokenAuth;
-  const wrap = document.createElement('div');
-  wrap.className = 'prereq-container';
-
-  const enableRow = document.createElement('label');
-  enableRow.className = 'prereq-enable';
-  const enableCb = document.createElement('input');
-  enableCb.type = 'checkbox';
-  enableCb.checked = !!cfg.enabled;
-  enableRow.appendChild(enableCb);
-  enableRow.appendChild(document.createTextNode(' Авто-получение токена (pre-request)'));
-  wrap.appendChild(enableRow);
-
-  const fields = document.createElement('div');
-  fields.className = 'prereq-fields';
-
-  // Login step selector — other steps in the same collection.
-  const loginField = document.createElement('div');
-  loginField.className = 'prereq-field';
-  loginField.appendChild(txt('label', 'Шаг логина'));
-  const loginSel = document.createElement('select');
-  const noneOpt = document.createElement('option');
-  noneOpt.value = '';
-  noneOpt.textContent = '— выберите шаг —';
-  loginSel.appendChild(noneOpt);
-  (activeCollection?.steps || []).forEach((s, i) => {
-    if (s === step || !s.id) return;
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.name || s.url || `Шаг ${i + 1}`;
-    if (s.id === cfg.loginStepId) opt.selected = true;
-    loginSel.appendChild(opt);
-  });
-  loginSel.onchange = () => {
-    cfg.loginStepId = loginSel.value;
-    debouncedSave();
-  };
-  loginField.appendChild(loginSel);
-  fields.appendChild(loginField);
-
-  const mkInput = (label, key, placeholder, type = 'text') => {
-    const f = document.createElement('div');
-    f.className = 'prereq-field';
-    f.appendChild(txt('label', label));
-    const inp = document.createElement('input');
-    inp.type = type;
-    inp.placeholder = placeholder || '';
-    inp.value = cfg[key] ?? '';
-    inp.oninput = () => {
-      cfg[key] = type === 'number' ? Number(inp.value) : inp.value;
-      debouncedSave();
-    };
-    f.appendChild(inp);
-    return f;
-  };
-  fields.appendChild(mkInput('Путь к токену в ответе', 'tokenPath', 'напр. data.token'));
-  fields.appendChild(mkInput('Имя переменной', 'tokenVar', 'token'));
-  fields.appendChild(mkInput('TTL кэша (сек, 0 = всегда заново)', 'ttlSeconds', '3600', 'number'));
-
-  const bearerRow = document.createElement('label');
-  bearerRow.className = 'prereq-enable';
-  const bearerCb = document.createElement('input');
-  bearerCb.type = 'checkbox';
-  bearerCb.checked = !!cfg.asBearer;
-  bearerCb.onchange = () => {
-    cfg.asBearer = bearerCb.checked;
-    debouncedSave();
-  };
-  bearerRow.appendChild(bearerCb);
-  bearerRow.appendChild(document.createTextNode(' Добавить как Authorization: Bearer <token>'));
-  fields.appendChild(bearerRow);
-
-  const hint = document.createElement('div');
-  hint.className = 'prereq-hint';
-  hint.textContent =
-    'Если токен отсутствует или истёк, сначала выполнится шаг логина, токен извлечётся по пути и подставится в этот запрос как {имя_переменной} (в URL, заголовках, теле).';
-  fields.appendChild(hint);
-
-  const sync = () => {
-    fields.style.display = enableCb.checked ? 'block' : 'none';
-  };
-  enableCb.onchange = () => {
-    cfg.enabled = enableCb.checked;
-    sync();
-    debouncedSave();
-  };
-  sync();
-  wrap.appendChild(fields);
-  container.appendChild(wrap);
-}
-
 // ================== Steps ==================
 function renderSteps() {
-  // Если коллекция та же — ничего не делаем
-  if (lastRenderedCollectionId === activeCollection?.id && stepsContainer.children.length > 0) {
-    return;
-  }
-
-  // Если коллекция изменилась — сохраняем состояние старых редакторов
-  if (lastRenderedCollectionId && lastRenderedCollectionId !== activeCollection?.id) {
-    activeEditors.forEach((info) => {
-      if (info.editor) {
-        try {
-          info.editor.toTextArea();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-    activeEditors.clear();
-    stepCardsCache.clear();
-  }
+  destroyAllEditors();
 
   stepsContainer.innerHTML = '';
   if (!activeCollection) return;
@@ -1610,8 +1426,6 @@ function renderSteps() {
     fragment.appendChild(createStepCard(s, i));
   });
   stepsContainer.appendChild(fragment);
-
-  lastRenderedCollectionId = activeCollection.id;
 
   // Refresh всех редакторов одним батчем
   requestAnimationFrame(() => {
@@ -1628,7 +1442,9 @@ function createStepCard(step, idx) {
   // ================== Header ==================
   const hdr = document.createElement('div');
   hdr.className = 'step-header';
-  const nm = txt('span', step.name || `Шаг ${idx + 1}`, 'step-name');
+  const stepTitle = step.name || `Шаг ${idx + 1}`;
+  const nm = txt('span', truncateName(stepTitle, 48), 'step-name');
+  nm.title = stepTitle;
   const acts = document.createElement('div');
   acts.className = 'step-actions';
 
@@ -1749,7 +1565,6 @@ function createStepCard(step, idx) {
   crt('auth', 'Authorization');
   crt('body', 'Body');
   crt('scripts', 'Scripts');
-  crt('prereq', 'Auth Token (Auto)');
   card.appendChild(tc);
 
   Object.keys(tb).forEach((id) => {
@@ -2129,18 +1944,32 @@ function createStepCard(step, idx) {
   const postContent = document.createElement('div');
   postContent.className = 'sub-tab-content';
 
-  if (!step.scripts) {
-    step.scripts = {
-      prerequest: { enabled: true, code: '' },
-      postresponse: { enabled: true, code: '' },
-    };
-  }
+  const preHint = txt(
+    'div',
+    'API: pm.env.get/set, pm.request.headers.set/get/remove, pm.request.body.set/get, await pm.sendRequest({ method, url, headers, body })',
+    'body-hint',
+  );
+  const postHint = txt('div', 'API: pm.response, pm.env.get/set, pm.request, await pm.sendRequest(...)', 'body-hint');
+  preContent.appendChild(preHint);
+  postContent.appendChild(postHint);
+
+  const normalizeScript = (script) => {
+    if (!script || typeof script !== 'object' || Array.isArray(script)) return { code: '', timeout: 5000 };
+    const rawCode = script.code;
+    const code = rawCode == null || rawCode === 'undefined' ? '' : String(rawCode);
+    return { ...script, code, timeout: script.timeout || 5000 };
+  };
+
+  step.scripts = {
+    prerequest: normalizeScript(step.scripts?.prerequest),
+    postresponse: normalizeScript(step.scripts?.postresponse),
+  };
 
   const createScriptEditor = (parent, type) => {
     const editorId = `cm-script-${type}-${idx}-${Date.now()}`;
     const textarea = document.createElement('textarea');
-    textarea.value = step.scripts[type].code || '';
-    const { wrapper, editor } = createCodeMirrorEditor(textarea, textarea.value, 'javascript');
+    textarea.value = step.scripts[type].code;
+    const { wrapper, editor } = createCodeMirrorEditor(textarea, step.scripts[type].code, 'javascript');
     activeEditors.set(editorId, { editor, wrapper });
 
     if (editor) {
@@ -2174,9 +2003,6 @@ function createStepCard(step, idx) {
   scriptsContainer.append(scriptsTabs, preContent, postContent);
   tbc.scripts.appendChild(scriptsContainer);
 
-  // ================== Auth Token (Auto) Tab ==================
-  buildPrereqTab(tbc.prereq, step);
-
   // ================== Body Tab ==================
   const bodyContainer = document.createElement('div');
   bodyContainer.className = 'body-container';
@@ -2209,16 +2035,6 @@ function createStepCard(step, idx) {
   ];
 
   const rawEditorId = 'cm-raw-' + idx + '-' + Date.now();
-  // Кеш DOM элементов body для быстрого переключения
-  const bodyDomCache = {
-    none: null,
-    'form-data': null,
-    urlencoded: null,
-    raw: null,
-    binary: null,
-    graphql: null,
-  };
-  let currentBodyType = step.bodyType;
   bodyTypes.forEach((t) => {
     const lbl = document.createElement('label');
     lbl.className = 'body-type-radio';
@@ -2505,6 +2321,7 @@ function createStepCard(step, idx) {
           bta,
           step.body || '',
           modeMap[step.rawType] || 'text',
+          '540px',
         );
         activeEditors.set(rawEditorId, { editor: ce, wrapper: cw });
 
@@ -2654,7 +2471,7 @@ function createStepCard(step, idx) {
   renderBodyForm();
   tbc.body.appendChild(bodyContainer);
 
-  card.append(tbc.headers, tbc.auth, tbc.body, tbc.prereq);
+  card.append(tbc.headers, tbc.auth, tbc.body, tbc.scripts);
 
   // ================== Save Logic ==================
   const save = () => {
@@ -2662,7 +2479,8 @@ function createStepCard(step, idx) {
     step.url = ui.value.trim();
     step.method = md.value;
     md.dataset.method = step.method;
-    nm.textContent = step.name || `Шаг ${idx + 1}`;
+    nm.textContent = truncateName(step.name || `Шаг ${idx + 1}`, 48);
+    nm.title = step.name || `Шаг ${idx + 1}`;
     debouncedSave();
   };
   [ni, ui, md].forEach((el) => el.addEventListener('input', save));
@@ -3745,6 +3563,7 @@ async function loadData() {
       if (!c.results) c.results = [];
       c.steps.forEach((s) => {
         if (!s.id) s.id = generateStepId();
+        normalizeStepScripts(s);
       });
     });
     console.log('✅ Данные загружены:', {
@@ -3753,7 +3572,6 @@ async function loadData() {
       environments: data.environments.length,
     });
     renderTree();
-    loadRecentCollections();
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();
@@ -3780,7 +3598,7 @@ async function saveData() {
 document.addEventListener('keydown', async (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault();
-    await saveData();
+    await forceSave();
     toast('Сохранено', 'success', 1500);
   }
   if (e.key === 'Escape') {
@@ -3856,5 +3674,6 @@ const bodyObs = new MutationObserver((mutations) => {
 bodyObs.observe(document.body, { childList: true });
 
 // Init
+renderAppVersion();
 loadData();
 showEmptyState();

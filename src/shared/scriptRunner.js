@@ -15,7 +15,6 @@ async function executeScript(code, context, timeout = 5000) {
   }
 
   return new Promise((resolve) => {
-    let timeoutHandle;
     let resolved = false;
 
     const wrappedCode = `
@@ -46,7 +45,13 @@ async function executeScript(code, context, timeout = 5000) {
           }
           throw new Error('runStep callback not available');
         },
-      });
+        sendRequest: async (options) => {
+          if (context.callbacks && context.callbacks.sendRequest) {
+            return await context.callbacks.sendRequest(options);
+          }
+          throw new Error('sendRequest callback not available');
+        },
+      }, context.request || {}, context.response || {});
 
       // Build the execution function with safe globals
       const executionFunction = new Function(
@@ -64,7 +69,7 @@ async function executeScript(code, context, timeout = 5000) {
         context.env,
         context.step || {},
         context.data || {},
-        context.response || {}
+        pmApi.response || {}
       );
 
       // Handle both sync and async execution
@@ -78,6 +83,7 @@ async function executeScript(code, context, timeout = 5000) {
                 success: true,
                 result: asyncResult,
                 env: context.env,
+                request: context.request,
               });
             }
           })
@@ -96,6 +102,7 @@ async function executeScript(code, context, timeout = 5000) {
             success: true,
             result,
             env: context.env,
+            request: context.request,
           });
         }
       }
