@@ -110,33 +110,82 @@ function createMainWindow() {
 }
 
 // ================== Auto Updater ==================
+function sendUpdaterEvent(channel, payload = {}) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
 function initAutoUpdater() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    console.log('Auto updater disabled: app is not packaged');
+    return;
+  }
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('checking-for-update', () => console.log('Проверка обновлений...'));
-  autoUpdater.on('update-available', (info) => console.log('Доступно обновление:', info.version));
-  autoUpdater.on('update-not-available', () => console.log('Обновлений нет'));
-  autoUpdater.on('error', (err) => console.error('Ошибка автообновления:', err));
-  autoUpdater.on('download-progress', (p) => console.log(`Загрузка: ${Math.round(p.percent)}%`));
-  autoUpdater.on('update-downloaded', () => console.log('Обновление загружено'));
+  autoUpdater.on('checking-for-update', () => {
+    console.log('Checking for updates...');
+    sendUpdaterEvent('update-status', { status: 'checking' });
+  });
 
-  autoUpdater.checkForUpdatesAndNotify().catch(err => {
-    console.error('Ошибка проверки обновлений:', err);
+  autoUpdater.on('update-available', (info) => {
+    console.log('Update available:', info.version);
+    sendUpdaterEvent('update-available', info);
+    sendUpdaterEvent('update-status', { status: 'available', version: info.version });
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('No updates available');
+    sendUpdaterEvent('update-not-available', info);
+    sendUpdaterEvent('update-status', { status: 'current' });
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('Auto update error:', err);
+    sendUpdaterEvent('update-error', { message: err.message || String(err) });
+    sendUpdaterEvent('update-status', { status: 'error', message: err.message || String(err) });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Math.round(progress.percent || 0);
+    console.log(`Update download: ${percent}%`);
+    sendUpdaterEvent('update-download-progress', { percent });
+    sendUpdaterEvent('update-status', { status: 'downloading', percent });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('Update downloaded');
+    sendUpdaterEvent('update-downloaded', info);
+    sendUpdaterEvent('update-status', { status: 'downloaded' });
+  });
+
+  autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    console.error('Update check error:', err);
+    sendUpdaterEvent('update-error', { message: err.message || String(err) });
   });
 }
 
 ipcMain.handle('check-for-updates', async () => {
-  if (!app.isPackaged) return { success: false, error: 'Not packaged' };
-  return await autoUpdater.checkForUpdatesAndNotify();
+  if (!app.isPackaged) {
+    return { success: false, error: 'Auto updates work only in packaged builds' };
+  }
+
+  try {
+    const result = await autoUpdater.checkForUpdatesAndNotify();
+    return { success: true, updateInfo: result?.updateInfo || null };
+  } catch (e) {
+    console.error('Manual update check error:', e);
+    return { success: false, error: e.message || String(e) };
+  }
 });
 
 ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('quit-and-install', () => {
   autoUpdater.quitAndInstall();
+  return { success: true };
 });
 
 // ================== App Lifecycle ==================
@@ -780,7 +829,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
       if (scriptResult.skipRequest) {
         const requestBody = serializeRequestBody(requestState.body);
-        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
+        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
         if (collectionName) updateRecentCollection(collectionName, 'executed');
         return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers };
       }
@@ -815,7 +864,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
       }
     }
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
@@ -823,7 +872,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 

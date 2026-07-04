@@ -537,6 +537,54 @@ body {
   vertical-align: middle;
 }
 
+.update-panel {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-status {
+  min-height: 16px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-status[data-status='available'],
+.update-status[data-status='downloading'] {
+  color: var(--warning);
+}
+
+.update-status[data-status='downloaded'],
+.update-status[data-status='current'] {
+  color: var(--success);
+}
+
+.update-status[data-status='error'] {
+  color: var(--danger);
+}
+
+.update-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.update-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  justify-content: center;
+  font-size: 12px;
+  box-shadow: none;
+}
+
 .environment-selector {
   display: flex;
   gap: 6px;

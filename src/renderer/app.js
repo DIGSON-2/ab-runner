@@ -70,6 +70,9 @@ const resizer = document.getElementById('resizer');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
 const appVersionBadge = document.getElementById('appVersionBadge');
+const updateStatusEl = document.getElementById('updateStatus');
+const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+const installUpdateBtn = document.getElementById('installUpdateBtn');
 
 // Environments & Right Panel
 const environmentSelect = document.getElementById('environmentSelect');
@@ -507,6 +510,95 @@ async function renderAppVersion() {
   } catch (e) {
     console.error('Version load error:', e);
   }
+}
+
+function setUpdateStatus(message, type = 'idle') {
+  if (!updateStatusEl) return;
+  updateStatusEl.textContent = message;
+  updateStatusEl.dataset.status = type;
+}
+
+function formatUpdateStatus(data = {}) {
+  switch (data.status) {
+    case 'checking':
+      return 'Проверка обновлений...';
+    case 'available':
+      return `Доступно обновление${data.version ? ` ${data.version}` : ''}. Скачиваю...`;
+    case 'current':
+      return 'Установлена последняя версия';
+    case 'downloading':
+      return `Загрузка обновления: ${data.percent || 0}%`;
+    case 'downloaded':
+      return 'Обновление загружено. Можно установить.';
+    case 'error':
+      return `Ошибка обновления: ${data.message || 'неизвестная ошибка'}`;
+    default:
+      return data.message || 'Обновления: статус неизвестен';
+  }
+}
+
+function initUpdateUi() {
+  if (checkUpdateBtn) {
+    checkUpdateBtn.addEventListener('click', async () => {
+      if (!window.api.checkForUpdates) return;
+      checkUpdateBtn.disabled = true;
+      setUpdateStatus('Проверка обновлений...', 'checking');
+      try {
+        const result = await window.api.checkForUpdates();
+        if (!result?.success) {
+          const message =
+            result?.error === 'Auto updates work only in packaged builds'
+              ? 'Автообновления работают только в установленной версии'
+              : result?.error || 'Не удалось проверить обновления';
+          setUpdateStatus(message, 'error');
+          toast(message, 'warning', 4000);
+        }
+      } catch (e) {
+        setUpdateStatus('Ошибка проверки обновлений', 'error');
+        toast('Ошибка проверки обновлений: ' + e.message, 'error');
+      } finally {
+        checkUpdateBtn.disabled = false;
+      }
+    });
+  }
+
+  if (installUpdateBtn) {
+    installUpdateBtn.addEventListener('click', async () => {
+      if (!window.api.quitAndInstall) return;
+      setUpdateStatus('Перезапуск для установки...', 'downloaded');
+      await window.api.quitAndInstall();
+    });
+  }
+
+  if (!window.updater) return;
+
+  window.updater.onUpdateStatus?.((data) => {
+    setUpdateStatus(formatUpdateStatus(data), data.status || 'idle');
+  });
+
+  window.updater.onUpdateAvailable?.((event, info) => {
+    const version = info?.version ? ` ${info.version}` : '';
+    setUpdateStatus(`Доступно обновление${version}. Скачиваю...`, 'available');
+    toast(`Доступно обновление${version}`, 'info', 4000);
+  });
+
+  window.updater.onDownloadProgress?.((data) => {
+    setUpdateStatus(`Загрузка обновления: ${data.percent || 0}%`, 'downloading');
+  });
+
+  window.updater.onUpdateDownloaded?.(() => {
+    setUpdateStatus('Обновление загружено', 'downloaded');
+    if (installUpdateBtn) installUpdateBtn.style.display = 'inline-flex';
+    toast('Обновление загружено. Нажмите "Установить".', 'success', 6000);
+  });
+
+  window.updater.onUpdateNotAvailable?.(() => {
+    setUpdateStatus('Установлена последняя версия', 'current');
+  });
+
+  window.updater.onUpdateError?.((data) => {
+    setUpdateStatus(data?.message || 'Ошибка обновления', 'error');
+  });
 }
 
 // ================== Умное сохранение ==================
@@ -4205,5 +4297,6 @@ bodyObs.observe(document.body, { childList: true });
 
 // Init
 renderAppVersion();
+initUpdateUi();
 loadData();
 showEmptyState();
