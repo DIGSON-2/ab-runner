@@ -175,8 +175,24 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
         cm.toggleComment({ line: '//', block: ['/*', '*/'], indent: false, padding: ' ', fullLines: true });
         return false;
       },
-      'Ctrl-F': 'findPersistent',
-      'Cmd-F': 'findPersistent',
+      'Ctrl-F': (cm) => {
+        const field = cm.getWrapperElement()?.closest('.field');
+        const bodySearch = field?.querySelector('.body-search-input');
+        if (bodySearch) {
+          bodySearch.focus();
+          bodySearch.select();
+        }
+        return false;
+      },
+      'Cmd-F': (cm) => {
+        const field = cm.getWrapperElement()?.closest('.field');
+        const bodySearch = field?.querySelector('.body-search-input');
+        if (bodySearch) {
+          bodySearch.focus();
+          bodySearch.select();
+        }
+        return false;
+      },
     },
   });
   editor.on('change', () => {
@@ -188,6 +204,149 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
   wrapper.appendChild(textarea);
   wrapper.classList.add('theme-' + currentTheme);
   return { wrapper, editor };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getSearchMatches(text, query, matchCase) {
+  if (!query) return [];
+  const flags = matchCase ? 'g' : 'gi';
+  const regex = new RegExp(escapeRegExp(query), flags);
+  const matches = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    matches.push({ from: match.index, to: match.index + match[0].length });
+    if (match[0].length === 0) regex.lastIndex++;
+  }
+  return matches;
+}
+
+function createBodySearchPanel(editor, onChange) {
+  const state = {
+    marks: [],
+    matches: [],
+    currentIndex: -1,
+  };
+
+  const panel = document.createElement('div');
+  panel.className = 'body-search-panel';
+
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.placeholder = 'Найти в Body';
+  searchInput.className = 'body-search-input';
+
+  const counter = document.createElement('span');
+  counter.className = 'body-search-count';
+  counter.textContent = '0/0';
+
+  const prevBtn = document.createElement('button');
+  prevBtn.type = 'button';
+  prevBtn.className = 'secondary body-search-nav';
+  prevBtn.textContent = '↑';
+  prevBtn.title = 'Предыдущее совпадение';
+
+  const nextBtn = document.createElement('button');
+  nextBtn.type = 'button';
+  nextBtn.className = 'secondary body-search-nav';
+  nextBtn.textContent = '↓';
+  nextBtn.title = 'Следующее совпадение';
+
+  const matchMode = document.createElement('select');
+  matchMode.className = 'body-search-mode';
+  matchMode.title = 'Строгость совпадения';
+  matchMode.innerHTML = `
+    <option value="loose">Без учета регистра</option>
+    <option value="case">С учетом регистра</option>
+  `;
+
+  const replaceInput = document.createElement('input');
+  replaceInput.type = 'text';
+  replaceInput.placeholder = 'Заменить на';
+  replaceInput.className = 'body-search-input body-search-replace';
+
+  const replaceAllBtn = document.createElement('button');
+  replaceAllBtn.type = 'button';
+  replaceAllBtn.className = 'secondary body-search-replace-btn';
+  replaceAllBtn.textContent = 'Заменить все';
+
+  panel.append(searchInput, counter, prevBtn, nextBtn, matchMode, replaceInput, replaceAllBtn);
+
+  const clearMarks = () => {
+    state.marks.forEach((mark) => mark.clear());
+    state.marks = [];
+  };
+
+  const updateCounter = () => {
+    const total = state.matches.length;
+    counter.textContent = total ? `${state.currentIndex + 1}/${total}` : '0/0';
+    prevBtn.disabled = total === 0;
+    nextBtn.disabled = total === 0;
+    replaceAllBtn.disabled = total === 0;
+  };
+
+  const jumpToCurrent = () => {
+    if (!editor || state.currentIndex < 0 || !state.matches[state.currentIndex]) return;
+    const match = state.matches[state.currentIndex];
+    const from = editor.posFromIndex(match.from);
+    const to = editor.posFromIndex(match.to);
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, 80);
+    editor.focus();
+  };
+
+  const refresh = (keepIndex = false) => {
+    if (!editor) return;
+    clearMarks();
+    const query = searchInput.value;
+    const matchCase = matchMode.value === 'case';
+    state.matches = getSearchMatches(editor.getValue(), query, matchCase);
+    state.currentIndex = keepIndex && state.matches.length ? Math.min(state.currentIndex, state.matches.length - 1) : state.matches.length ? 0 : -1;
+
+    state.matches.forEach((match, index) => {
+      const markClass = index === state.currentIndex ? 'body-search-match current' : 'body-search-match';
+      state.marks.push(editor.markText(editor.posFromIndex(match.from), editor.posFromIndex(match.to), { className: markClass }));
+    });
+
+    updateCounter();
+  };
+
+  const go = (direction) => {
+    if (!state.matches.length) return;
+    state.currentIndex = (state.currentIndex + direction + state.matches.length) % state.matches.length;
+    refresh(true);
+    jumpToCurrent();
+  };
+
+  searchInput.addEventListener('input', () => {
+    refresh();
+  });
+  matchMode.addEventListener('change', () => {
+    refresh();
+  });
+  prevBtn.addEventListener('click', () => go(-1));
+  nextBtn.addEventListener('click', () => go(1));
+  replaceAllBtn.addEventListener('click', () => {
+    const query = searchInput.value;
+    if (!query) return;
+    const replacement = replaceInput.value;
+    const matchCase = matchMode.value === 'case';
+    const regex = new RegExp(escapeRegExp(query), matchCase ? 'g' : 'gi');
+    const before = editor.getValue();
+    const next = before.replace(regex, replacement);
+    const changed = getSearchMatches(before, query, matchCase).length;
+    if (!changed) return;
+    editor.setValue(next);
+    if (typeof onChange === 'function') onChange(next);
+    refresh();
+    toast(`Заменено: ${changed}`, 'success', 1800);
+  });
+  editor.on('change', () => refresh(true));
+
+  updateCounter();
+  return panel;
 }
 
 function destroyAllEditors() {
@@ -2639,6 +2798,13 @@ function createStepCard(step, idx) {
           '540px',
         );
         activeEditors.set(rawEditorId, { editor: ce, wrapper: cw });
+        const searchPanel = ce
+          ? createBodySearchPanel(ce, (nextValue) => {
+            step.body = nextValue;
+            bta.value = nextValue;
+            debouncedSave();
+          })
+          : null;
 
         // ===== АВТОФОРМАТИРОВАНИЕ JSON ПРИ ПЕРВОМ ОТКРЫТИИ =====
         if (ce) {
@@ -2675,7 +2841,8 @@ function createStepCard(step, idx) {
           e.stopPropagation();
           formatCurrentEditor(rawEditorId);
         };
-        bf.append(blr, cw);
+        if (searchPanel) bf.append(blr, searchPanel, cw);
+        else bf.append(blr, cw);
         bodyFormContainer.appendChild(bf);
 
         // Refresh после рендера (убирает баг с "невидимым" текстом)
