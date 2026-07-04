@@ -1,4 +1,4 @@
-const { cleanString, stripJsonComments } = require('../src/shared/strings');
+const { cleanString, stripJsonComments, repairJsonText } = require('../src/shared/strings');
 
 describe('cleanString', () => {
   test('returns non-strings unchanged', () => {
@@ -36,5 +36,19 @@ describe('stripJsonComments', () => {
   test('handles escaped quotes inside strings', () => {
     const input = '{"a":"he said \\"hi\\" // x"}';
     expect(stripJsonComments(input)).toBe(input);
+  });
+
+  test('removes single-slash line comments at line start', () => {
+    expect(stripJsonComments('{\n/type: support\n"a":1\n}')).toBe('{\n\n"a":1\n}');
+  });
+});
+
+describe('repairJsonText', () => {
+  test('repairs comments and missing closing brackets', () => {
+    expect(JSON.parse(repairJsonText('{"a":[1,2]\n/type: support'))).toEqual({ a: [1, 2] });
+  });
+
+  test('throws readable syntax details for invalid json', () => {
+    expect(() => repairJsonText('{"a": }')).toThrow(/line|position/i);
   });
 });

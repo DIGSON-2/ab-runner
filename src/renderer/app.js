@@ -1,6 +1,6 @@
 import { escapeHtml, txt, debounce, cachedJsonParse } from './utils.js';
 import { collectionRelevance } from './search.js';
-import { formatJSON, parseJsonValue } from './jsonFormat.js';
+import { formatJSON, parseJsonValue, repairJsonText } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
 
@@ -13,9 +13,17 @@ let searchExpandedFolders = new Set();
 let currentStepForSend = null;
 let fullHistory = [];
 let sidebarWidth = 260;
+const OPEN_TABS_LIMIT_KEY = 'ab-runner-open-tabs-limit';
+const DEFAULT_OPEN_TABS_LIMIT = 10;
+const MIN_OPEN_TABS_LIMIT = 1;
+const MAX_OPEN_TABS_LIMIT = 30;
+let openTabsLimit = readOpenTabsLimit();
 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
+const workspaceTabsBar = document.getElementById('workspaceTabsBar');
+const workspaceTabsTitle = document.getElementById('workspaceTabsTitle');
+const workspaceTabsLimitInput = document.getElementById('workspaceTabsLimitInput');
 const collectionTabsEl = document.getElementById('collectionTabs');
 const searchInput = document.getElementById('searchInput');
 const emptyStateEl = document.getElementById('emptyState');
@@ -115,9 +123,23 @@ const globalImportBtn = document.getElementById('globalImportBtn');
 const importDropdownMenu = document.getElementById('importDropdownMenu');
 const importFilesBtn = document.getElementById('importFilesBtn');
 const importFolderBtn = document.getElementById('importFolderBtn');
+const appDataBtn = document.getElementById('appDataBtn');
+const appDataMenu = document.getElementById('appDataMenu');
+const exportAppDataBtn = document.getElementById('exportAppDataBtn');
+const importAppDataBtn = document.getElementById('importAppDataBtn');
 
 // ================== CodeMirror ==================
 const activeEditors = new Map();
+
+if (workspaceTabsLimitInput) {
+  workspaceTabsLimitInput.value = String(openTabsLimit);
+  workspaceTabsLimitInput.addEventListener('change', () => setOpenTabsLimit(workspaceTabsLimitInput.value));
+  workspaceTabsLimitInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      workspaceTabsLimitInput.blur();
+    }
+  });
+}
 
 function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript', height = '180px') {
   const editorValue = initialValue == null || initialValue === 'undefined' ? '' : String(initialValue);
@@ -1019,11 +1041,22 @@ if (globalImportBtn) {
   globalImportBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     importDropdownMenu.classList.toggle('show');
+    appDataMenu?.classList.remove('show');
+  });
+}
+if (appDataBtn) {
+  appDataBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    appDataMenu.classList.toggle('show');
+    importDropdownMenu?.classList.remove('show');
   });
 }
 document.addEventListener('click', (e) => {
   if (importDropdownMenu && !importDropdownMenu.contains(e.target) && e.target !== globalImportBtn) {
     importDropdownMenu.classList.remove('show');
+  }
+  if (appDataMenu && !appDataMenu.contains(e.target) && e.target !== appDataBtn) {
+    appDataMenu.classList.remove('show');
   }
 });
 if (importFilesBtn) {
@@ -1038,6 +1071,54 @@ if (importFolderBtn) {
     importDropdownMenu.classList.remove('show');
     const files = await window.api.openPostmanFolderDialog();
     if (files && files.length > 0) await processPostmanFiles(files);
+  });
+}
+
+if (exportAppDataBtn) {
+  exportAppDataBtn.addEventListener('click', async () => {
+    appDataMenu?.classList.remove('show');
+    try {
+      await saveData();
+      const res = await window.api.exportAppBackup();
+      if (res?.success) {
+        toast('Backup сохранён', 'success');
+      } else if (!res?.cancelled) {
+        toast('Ошибка экспорта: ' + (res?.error || 'неизвестная ошибка'), 'error');
+      }
+    } catch (e) {
+      toast('Ошибка экспорта: ' + e.message, 'error');
+    }
+  });
+}
+
+if (importAppDataBtn) {
+  importAppDataBtn.addEventListener('click', async () => {
+    appDataMenu?.classList.remove('show');
+    const ok = await confirmDialog(
+      'Восстановить backup',
+      'Текущие коллекции, окружения и история будут заменены данными из backup-файла. Продолжить?'
+    );
+    if (!ok) return;
+
+    try {
+      const res = await window.api.importAppBackup();
+      if (!res?.success) {
+        if (!res?.cancelled) toast('Ошибка импорта: ' + (res?.error || 'неизвестная ошибка'), 'error');
+        return;
+      }
+
+      activeCollectionId = null;
+      activeCollection = null;
+      openTabs = [];
+      collectionEditorEl.style.display = 'none';
+      emptyStateEl.style.display = 'block';
+      renderTabs();
+      await loadData();
+      const c = res.counts || {};
+      toast(`Backup восстановлен: ${c.collections || 0} коллекций, ${c.environments || 0} окружений`, 'success');
+    } catch (e) {
+      toast('Ошибка импорта: ' + e.message, 'error');
+    }
   });
 }
 
@@ -1467,6 +1548,32 @@ function expandParentsOf(collectionId) {
     } else break;
   }
 }
+
+function clampOpenTabsLimit(value) {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) return DEFAULT_OPEN_TABS_LIMIT;
+  return Math.min(MAX_OPEN_TABS_LIMIT, Math.max(MIN_OPEN_TABS_LIMIT, n));
+}
+
+function readOpenTabsLimit() {
+  return clampOpenTabsLimit(localStorage.getItem(OPEN_TABS_LIMIT_KEY));
+}
+
+function setOpenTabsLimit(value) {
+  openTabsLimit = clampOpenTabsLimit(value);
+  localStorage.setItem(OPEN_TABS_LIMIT_KEY, String(openTabsLimit));
+  if (workspaceTabsLimitInput) workspaceTabsLimitInput.value = String(openTabsLimit);
+  limitOpenTabs();
+  renderTabs();
+}
+
+function limitOpenTabs() {
+  while (openTabs.length > openTabsLimit) {
+    const removableIndex = openTabs.findIndex((tab) => tab.id !== activeCollectionId);
+    openTabs.splice(removableIndex === -1 ? 0 : removableIndex, 1);
+  }
+}
+
 function selectCollection(id) {
   const prev = activeCollectionId;
   if (prev && prev !== id) cleanupEmptyCollection(prev);
@@ -1478,6 +1585,7 @@ function selectCollection(id) {
   if (!openTabs.find((t) => t.id === id)) {
     openTabs.push({ id: activeCollection.id, name: activeCollection.name });
   }
+  limitOpenTabs();
 
   // Track collection view
   window.api.updateRecentCollection(activeCollection.id, 'viewed');
@@ -1490,11 +1598,17 @@ function selectCollection(id) {
 function renderTabs() {
   if (!collectionTabsEl) return;
   collectionTabsEl.innerHTML = '';
+  limitOpenTabs();
+
+  if (workspaceTabsTitle) {
+    workspaceTabsTitle.textContent = `Открытые запросы ${openTabs.length}/${openTabsLimit}`;
+  }
 
   if (openTabs.length === 0) {
-    collectionTabsEl.style.display = 'none';
+    if (workspaceTabsBar) workspaceTabsBar.style.display = 'none';
     return;
   }
+  if (workspaceTabsBar) workspaceTabsBar.style.display = 'flex';
   collectionTabsEl.style.display = 'flex';
 
   openTabs.forEach((tab) => {
@@ -2214,12 +2328,12 @@ function createStepCard(step, idx) {
   bodyTypeRow.className = 'body-type-row';
 
   const bodyTypes = [
-    { value: 'none', label: 'none' },
-    { value: 'form-data', label: 'form-data' },
-    { value: 'urlencoded', label: 'x-www-form-urlencoded' },
-    { value: 'raw', label: 'raw' },
-    { value: 'binary', label: 'binary' },
-    { value: 'graphql', label: 'GraphQL' },
+    { value: 'none', label: 'None', icon: '∅', hint: 'Без тела' },
+    { value: 'form-data', label: 'Form-data', icon: '▦', hint: 'Поля и файлы' },
+    { value: 'urlencoded', label: 'URL Encoded', icon: '≡', hint: 'HTML form' },
+    { value: 'raw', label: 'Raw', icon: '{}', hint: 'JSON, XML, Text' },
+    { value: 'binary', label: 'Binary', icon: '⬡', hint: 'Файл' },
+    { value: 'graphql', label: 'GraphQL', icon: '◆', hint: 'Query' },
   ];
 
   const rawEditorId = 'cm-raw-' + idx + '-' + Date.now();
@@ -2241,9 +2355,19 @@ function createStepCard(step, idx) {
       renderBodyForm();
       debouncedSave();
     });
-    const span = document.createElement('span');
-    span.textContent = t.label;
-    lbl.append(radio, span);
+    const icon = document.createElement('span');
+    icon.className = 'body-type-icon';
+    icon.textContent = t.icon;
+    const text = document.createElement('span');
+    text.className = 'body-type-text';
+    const name = document.createElement('span');
+    name.className = 'body-type-name';
+    name.textContent = t.label;
+    const hint = document.createElement('span');
+    hint.className = 'body-type-hint';
+    hint.textContent = t.hint;
+    text.append(name, hint);
+    lbl.append(radio, icon, text);
     bodyTypeRow.appendChild(lbl);
   });
 
@@ -2440,11 +2564,11 @@ function createStepCard(step, idx) {
         const rawTypeRow = document.createElement('div');
         rawTypeRow.className = 'raw-type-row';
         const rawTypes = [
-          { value: 'json', label: 'JSON', contentType: 'application/json' },
-          { value: 'javascript', label: 'JavaScript', contentType: 'application/javascript' },
-          { value: 'xml', label: 'XML', contentType: 'application/xml' },
-          { value: 'html', label: 'HTML', contentType: 'text/html' },
-          { value: 'text', label: 'Text', contentType: 'text/plain' },
+          { value: 'json', label: 'JSON', icon: '{}', contentType: 'application/json' },
+          { value: 'javascript', label: 'JavaScript', icon: 'JS', contentType: 'application/javascript' },
+          { value: 'xml', label: 'XML', icon: '<>', contentType: 'application/xml' },
+          { value: 'html', label: 'HTML', icon: '</>', contentType: 'text/html' },
+          { value: 'text', label: 'Text', icon: 'T', contentType: 'text/plain' },
         ];
 
         rawTypes.forEach((rt) => {
@@ -2474,9 +2598,12 @@ function createStepCard(step, idx) {
             }
             debouncedSave();
           });
+          const icon = document.createElement('span');
+          icon.className = 'raw-type-icon';
+          icon.textContent = rt.icon;
           const span = document.createElement('span');
           span.textContent = rt.label;
-          lbl.append(radio, span);
+          lbl.append(radio, icon, span);
           rawTypeRow.appendChild(lbl);
         });
         bodyFormContainer.appendChild(rawTypeRow);
@@ -2580,31 +2707,40 @@ function createStepCard(step, idx) {
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.className = 'binary-file-input';
+        fileInput.id = `binary-file-${idx}-${Date.now()}`;
         fileInput.onchange = () => {
           if (fileInput.files[0]) {
             step.binaryPath = fileInput.files[0].path;
             step.binaryName = fileInput.files[0].name;
             fileNameSpan.textContent = step.binaryName;
+            fileRow.classList.add('has-file');
             debouncedSave();
           }
         };
 
+        const pickBtn = document.createElement('label');
+        pickBtn.className = 'binary-file-pick';
+        pickBtn.htmlFor = fileInput.id;
+        pickBtn.innerHTML = '<span class="binary-file-pick-icon">📎</span><span>Выбрать файл</span>';
+
         const fileNameSpan = document.createElement('span');
         fileNameSpan.className = 'binary-file-name';
         fileNameSpan.textContent = step.binaryName || 'Файл не выбран';
+        if (step.binaryName) fileRow.classList.add('has-file');
 
         const clearBtn = document.createElement('button');
-        clearBtn.className = 'secondary';
-        clearBtn.textContent = '✕ Очистить';
+        clearBtn.className = 'secondary binary-file-clear';
+        clearBtn.textContent = 'Очистить';
         clearBtn.onclick = () => {
           step.binaryPath = '';
           step.binaryName = '';
           fileInput.value = '';
           fileNameSpan.textContent = 'Файл не выбран';
+          fileRow.classList.remove('has-file');
           debouncedSave();
         };
 
-        fileRow.append(fileInput, fileNameSpan, clearBtn);
+        fileRow.append(fileInput, pickBtn, fileNameSpan, clearBtn);
         fileField.appendChild(fileRow);
         bodyFormContainer.appendChild(fileField);
         break;
@@ -2689,6 +2825,11 @@ const formatTime = (ms) => {
 runCollectionBtn.addEventListener('click', async () => {
   if (!activeCollection || !activeCollection.steps?.length) {
     toast('Добавьте шаги', 'warning');
+    return;
+  }
+  const invalidStep = activeCollection.steps.find((step) => !prepareRawJsonBody(step));
+  if (invalidStep) {
+    toast(`Проверьте Body в шаге: ${invalidStep.name || 'без названия'}`, 'error', 6000);
     return;
   }
   if (stopCollectionBtn) {
@@ -2803,6 +2944,8 @@ window.api.onProgress((progressData) => {
     elapsedMs,
     etaMs,
     avgRequestTime,
+    requestBody,
+    requestHeaders,
   } = progressData;
   const row = document.createElement('tr');
   row.className = success ? 'success' : 'error';
@@ -2811,6 +2954,8 @@ window.api.onProgress((progressData) => {
   row.dataset.item = item;
   row.dataset.stepName = stepName;
   row.dataset.requestDuration = requestDuration || '';
+  row.dataset.requestBody = requestBody || '';
+  row.dataset.requestHeaders = requestHeaders ? JSON.stringify(requestHeaders) : '';
   row.appendChild(txt('td', `${requestNumber}/${totalRequests}`));
   row.appendChild(txt('td', item));
   row.appendChild(txt('td', stepName));
@@ -2839,6 +2984,8 @@ window.api.onProgress((progressData) => {
       status,
       error,
       responseData: row.dataset.responseData,
+      requestBody: row.dataset.requestBody,
+      requestHeaders: row.dataset.requestHeaders,
       requestDuration,
     });
   }
@@ -2865,6 +3012,8 @@ function renderRunnerTable(res) {
     row.dataset.item = r.item;
     row.dataset.stepName = r.stepName;
     row.dataset.requestDuration = r.requestDuration || '';
+    row.dataset.requestBody = r.requestBody || '';
+    row.dataset.requestHeaders = r.requestHeaders || '';
     row.appendChild(txt('td', `${index + 1}/${res.length}`));
     row.appendChild(txt('td', r.item || ''));
     row.appendChild(txt('td', r.stepName || ''));
@@ -3070,8 +3219,26 @@ function updateRawJsonFromInputs() {
   });
   testDataInput.value = JSON.stringify(obj, null, 2);
 }
+
+function prepareRawJsonBody(step) {
+  if (!step || step.bodyType !== 'raw' || step.rawType !== 'json' || !step.body || !step.body.trim()) return true;
+  try {
+    const repaired = repairJsonText(step.body);
+    if (repaired !== step.body) {
+      step.body = repaired;
+      debouncedSave();
+      toast('Body исправлен автоматически', 'info', 1800);
+    }
+    return true;
+  } catch (e) {
+    toast('Ошибка JSON body: ' + e.message, 'error', 6000);
+    return false;
+  }
+}
+
 sendSingleBtn.addEventListener('click', async () => {
   if (!currentStepForSend) return;
+  if (!prepareRawJsonBody(currentStepForSend)) return;
   const td = testDataInput.value.trim();
   try {
     if (td) JSON.parse(td);
@@ -3244,6 +3411,13 @@ function formatJsonBlock(data) {
   return `<pre class="${isJ ? 'json-display' : 'text-display'}">${escapeHtml(fmt)}</pre>`;
 }
 function buildDetailContent({ responseData, error, item, stepName, url, requestBody, requestHeaders }) {
+  if (typeof requestHeaders === 'string' && requestHeaders.trim()) {
+    try {
+      requestHeaders = JSON.parse(requestHeaders);
+    } catch {
+      requestHeaders = { raw: requestHeaders };
+    }
+  }
   let html = '';
   if (responseData && responseData !== 'null' && responseData !== 'undefined') {
     try {
@@ -3760,6 +3934,7 @@ async function loadData() {
       environments: data.environments.length,
     });
     renderTree();
+    renderTabs();
     updateEnvironmentSelector();
     updateHistoryFilter();
     renderRightPanel();

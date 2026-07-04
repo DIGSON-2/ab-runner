@@ -80,18 +80,26 @@
             <!-- Футер сайдбара -->
             <div class="sidebar-footer">
                 <div class="global-toolbar">
-                    <button id="globalJsonGeneratorBtn">📝 JSON</button>
+                    <button id="globalJsonGeneratorBtn" title="Создать JSON">{} JSON</button>
 
                     <div class="import-dropdown">
-                        <button id="globalImportBtn">📥 Импорт</button>
+                        <button id="globalImportBtn">⇩ Postman</button>
                         <div id="importDropdownMenu" class="dropdown-menu">
                             <button id="importFilesBtn">📄 Выбрать файлы</button>
                             <button id="importFolderBtn">📁 Выбрать папку</button>
                         </div>
                     </div>
 
-                    <button id="newFolderBtn">📁+</button>
-                    <button id="newRootCollectionBtn">➕</button>
+                    <button id="newFolderBtn" title="Создать папку">📁 Папка</button>
+                    <button id="newRootCollectionBtn" title="Создать запрос">＋ Запрос</button>
+
+                    <div class="data-dropdown">
+                        <button id="appDataBtn">💾 Данные</button>
+                        <div id="appDataMenu" class="dropdown-menu">
+                            <button id="exportAppDataBtn" title="Экспортировать все данные приложения">⇧ Экспорт backup</button>
+                            <button id="importAppDataBtn" title="Импортировать backup и заменить текущие данные">⇩ Восстановить backup</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="themeToggle" class="theme-toggle" data-tooltip="Тема: Тёмная. Кликните для смены">
@@ -109,8 +117,15 @@
 
         <!-- Основная область -->
         <main class="main">
-            <!-- Вкладки открытых коллекций -->
-            <div id="collectionTabs" class="collection-tabs"></div>
+            <!-- Открытые запросы -->
+            <div id="workspaceTabsBar" class="workspace-tabs-bar">
+                <span id="workspaceTabsTitle" class="workspace-tabs-title">Открытые запросы 0/10</span>
+                <label class="workspace-tabs-limit" title="Максимум открытых запросов сверху">
+                    Лимит
+                    <input id="workspaceTabsLimitInput" type="number" min="1" max="30" value="10">
+                </label>
+                <div id="collectionTabs" class="collection-tabs"></div>
+            </div>
 
             <!-- Пустое состояние -->
             <div id="emptyState" class="empty-state">

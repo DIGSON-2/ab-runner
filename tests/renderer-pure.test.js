@@ -1,5 +1,5 @@
 import { trigramSimilarity, getSearchText, collectionRelevance } from '../src/renderer/search.js';
-import { formatJSON, parseJsonValue } from '../src/renderer/jsonFormat.js';
+import { formatJSON, parseJsonValue, repairJsonText } from '../src/renderer/jsonFormat.js';
 import { parseCurl } from '../src/renderer/curlParser.js';
 import { countPostmanRequests } from '../src/renderer/postman.js';
 
@@ -32,6 +32,17 @@ describe('jsonFormat module', () => {
 
   test('formatJSON preserves line comments', () => {
     expect(formatJSON('{"a":1} // note')).toContain('// note');
+  });
+
+  test('formatJSON handles single-slash comments and closes brackets', () => {
+    const out = formatJSON('{"a":[1,2]\n/type: support');
+    expect(out).toContain('/type: support');
+    expect(out).toContain(']');
+    expect(out).toContain('}');
+  });
+
+  test('repairJsonText returns valid json without comments', () => {
+    expect(JSON.parse(repairJsonText('{"a":[1,2]\n/type: support'))).toEqual({ a: [1, 2] });
   });
 
   test('parseJsonValue coerces scalars', () => {

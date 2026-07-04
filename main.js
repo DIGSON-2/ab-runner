@@ -5,7 +5,7 @@ const fs = require('fs');
 const axios = require('axios');
 const { autoUpdater } = require('electron-updater');
 const FormData = require('form-data');
-const { stripJsonComments } = require('./src/shared/strings');
+const { repairJsonText } = require('./src/shared/strings');
 const { replacePlaceholders } = require('./src/shared/placeholders');
 const { buildHeaders } = require('./src/shared/auth');
 const { executeScript } = require('./src/shared/scriptRunner');
@@ -192,10 +192,14 @@ function buildRequestBody(step, item, env) {
       return { data: params, headers: {} };
     }
     case 'raw': {
-      let body = stripJsonComments(replacePlaceholders(step.body || '', item, env, { toJson: true }));
+      let body = replacePlaceholders(step.body || '', item, env, { toJson: true });
       let data;
-      if (step.rawType === 'json') { try { data = JSON.parse(body); } catch { data = body; } }
-      else { data = body; }
+      if (step.rawType === 'json') {
+        body = repairJsonText(body);
+        data = JSON.parse(body);
+      } else {
+        data = body;
+      }
       return { data, headers: {} };
     }
     case 'binary': {
@@ -393,6 +397,76 @@ async function writeData(data) {
 ipcMain.handle('get-data', async () => readData());
 ipcMain.handle('save-data', async (event, d) => { await writeData(d); return { success: true }; });
 
+function normalizeImportedAppData(input) {
+  const importedData = input && input.data && typeof input.data === 'object' ? input.data : input;
+  if (!importedData || typeof importedData !== 'object') throw new Error('File is not an AB Runner backup');
+
+  return {
+    folders: Array.isArray(importedData.folders) ? importedData.folders : [],
+    collections: Array.isArray(importedData.collections) ? importedData.collections : [],
+    environments: Array.isArray(importedData.environments) ? importedData.environments : [],
+    activeEnvironmentId: importedData.activeEnvironmentId || '',
+    recentCollections: Array.isArray(importedData.recentCollections) ? importedData.recentCollections : [],
+  };
+}
+
+ipcMain.handle('export-app-backup', async () => {
+  try {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const backup = {
+      app: 'AB Runner',
+      version: app.getVersion(),
+      exportedAt: new Date().toISOString(),
+      data: readData(),
+      history,
+    };
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save AB Runner backup',
+      defaultPath: `ab-runner-backup-${stamp}.json`,
+      filters: [{ name: 'AB Runner Backup', extensions: ['json'] }],
+    });
+    if (!filePath) return { success: false, cancelled: true };
+    fs.writeFileSync(filePath, JSON.stringify(backup, null, 2), 'utf8');
+    return { success: true, filePath };
+  } catch (e) {
+    console.error('Backup export error:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('import-app-backup', async () => {
+  try {
+    const { filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select AB Runner backup',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (!filePaths || filePaths.length === 0) return { success: false, cancelled: true };
+
+    const parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
+    const nextData = normalizeImportedAppData(parsed);
+    const nextHistory = Array.isArray(parsed.history) ? parsed.history : [];
+
+    await writeData(nextData);
+    history = nextHistory;
+    saveHistorySync();
+
+    return {
+      success: true,
+      filePath: filePaths[0],
+      counts: {
+        folders: nextData.folders.length,
+        collections: nextData.collections.length,
+        environments: nextData.environments.length,
+        history: nextHistory.length,
+      },
+    };
+  } catch (e) {
+    console.error('Backup import error:', e);
+    return { success: false, error: e.message };
+  }
+});
+
 // ================== Run Collection ==================
 let currentRun = null;
 
@@ -509,6 +583,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         let currentUrl = replacePlaceholders(step.url, item, env);
         const requestNumber = counter + 1;
         const requestStartTime = Date.now();
+        let requestBody = null;
+        let requestHeaders = {};
+        let requestMethod = step.method;
 
         try {
           const stepEnv = env;
@@ -560,7 +637,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
 
           applyRequestStatePlaceholders(requestState, item, stepEnv);
           currentUrl = requestState.url;
-          const requestBody = serializeRequestBody(requestState.body);
+          requestBody = serializeRequestBody(requestState.body);
+          requestHeaders = requestState.headers;
+          requestMethod = requestState.method;
 
           const response = await axios({
             method: requestState.method,
@@ -602,7 +681,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -610,10 +689,10 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           requestTimes.push(requestDuration);
           const status = e.response ? e.response.status : e.message;
 
-          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status, success: false, error: e.message, responseData: e.response?.data, responseHeaders: e.response?.headers });
+          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status, success: false, error: e.message, responseData: e.response?.data, responseHeaders: e.response?.headers, requestBody, requestHeaders });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
         }
 
         if (delay > 0) {
@@ -744,7 +823,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Одиночный запрос', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
