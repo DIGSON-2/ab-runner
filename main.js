@@ -628,7 +628,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         if (currentRun?.cancelled) break;
 
         const step = steps[j];
-        const stepName = step.name || `Шаг ${j + 1}`;
+        const stepName = step.name || `Step ${j + 1}`;
         let currentUrl = replacePlaceholders(step.url, item, env);
         const requestNumber = counter + 1;
         const requestStartTime = Date.now();
@@ -640,6 +640,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           const stepEnv = env;
           const requestState = buildStepRequestState(step, item, stepEnv);
           currentUrl = requestState.url;
+          requestBody = serializeRequestBody(requestState.body);
+          requestHeaders = requestState.headers;
+          requestMethod = requestState.method;
 
           // Execute pre-request script if enabled
           const prerequestCode = getScriptCode(step, 'prerequest');
@@ -660,9 +663,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               counter++;
               const requestDuration = Date.now() - requestStartTime;
               requestTimes.push(requestDuration);
-              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: 0, success: false, error: `Pre-request script error: ${scriptResult.error}`, responseData: null, responseHeaders: {} });
+              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status: 0, success: false, error: `Pre-request script error: ${scriptResult.error}`, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
               const avgTime = getAvgTime(requestTimes);
-              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: `Script: ${scriptResult.error}`, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: null });
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: `Script: ${scriptResult.error}`, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: null });
               continue;
             }
 
@@ -670,9 +673,12 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               counter++;
               const requestDuration = Date.now() - requestStartTime;
               requestTimes.push(requestDuration);
-              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: step.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {} });
+              requestBody = serializeRequestBody(requestState.body);
+              requestHeaders = requestState.headers;
+              requestMethod = requestState.method;
+              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders });
               const avgTime = getAvgTime(requestTimes);
-              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
               continue;
             }
 
@@ -807,6 +813,8 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
     const item = testData ? JSON.parse(testData) : {};
     const requestState = buildStepRequestState(step, item, env);
     let currentUrl = requestState.url;
+    let requestBody = serializeRequestBody(requestState.body);
+    let requestHeaders = requestState.headers;
 
     const prerequestCode = getScriptCode(step, 'prerequest');
     if (prerequestCode) {
@@ -824,12 +832,16 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
       if (!scriptResult.success) {
         if (scriptResult.abortCollection) throw new Error(`Aborted: ${scriptResult.error}`);
-        return { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody: null, requestHeaders: {} };
+        const errorResult = { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody, requestHeaders };
+        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: false, error: errorResult.statusText, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
+        if (collectionName) updateRecentCollection(collectionName, 'executed');
+        return errorResult;
       }
 
       if (scriptResult.skipRequest) {
-        const requestBody = serializeRequestBody(requestState.body);
-        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
+        requestBody = serializeRequestBody(requestState.body);
+        requestHeaders = requestState.headers;
+        addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
         if (collectionName) updateRecentCollection(collectionName, 'executed');
         return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers };
       }
@@ -839,7 +851,8 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
     applyRequestStatePlaceholders(requestState, item, env);
     currentUrl = requestState.url;
-    const requestBody = serializeRequestBody(requestState.body);
+    requestBody = serializeRequestBody(requestState.body);
+    requestHeaders = requestState.headers;
     const response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 30000 });
 
     const postresponseCode = getScriptCode(step, 'postresponse');
@@ -864,7 +877,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
       }
     }
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
@@ -872,7 +885,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || '��������� ������', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 

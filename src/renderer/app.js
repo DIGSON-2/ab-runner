@@ -184,8 +184,9 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
         if (bodySearch) {
           bodySearch.focus();
           bodySearch.select();
+          return false;
         }
-        return false;
+        return CodeMirror.Pass;
       },
       'Cmd-F': (cm) => {
         const field = cm.getWrapperElement()?.closest('.field');
@@ -193,8 +194,9 @@ function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript'
         if (bodySearch) {
           bodySearch.focus();
           bodySearch.select();
+          return false;
         }
-        return false;
+        return CodeMirror.Pass;
       },
     },
   });
