@@ -4,7 +4,7 @@ import { formatJSON, parseJsonValue, repairJsonText } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
 
-let data = { folders: [], collections: [], environments: [] };
+let data = { folders: [], collections: [], environments: [], platforms: [] };
 let activeCollectionId = null;
 let activeCollection = null;
 let openTabs = []; // Array of { id, name }
@@ -18,7 +18,7 @@ const DEFAULT_OPEN_TABS_LIMIT = 10;
 const MIN_OPEN_TABS_LIMIT = 1;
 const MAX_OPEN_TABS_LIMIT = 30;
 let openTabsLimit = readOpenTabsLimit();
-
+let isRunning = false 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
 const workspaceTabsBar = document.getElementById('workspaceTabsBar');
@@ -76,6 +76,8 @@ const installUpdateBtn = document.getElementById('installUpdateBtn');
 
 // Environments & Right Panel
 const environmentSelect = document.getElementById('environmentSelect');
+const platformSelect = document.getElementById('platformSelect');
+const addPlatformBtn = document.getElementById('addPlatformBtn');
 const manageEnvBtnGlobal = document.getElementById('manageEnvBtnGlobal');
 const envManagerModal = document.getElementById('envManagerModal');
 const envListContainer = document.getElementById('envListContainer');
@@ -786,18 +788,72 @@ function ensureEnvironmentShape(env) {
     if (v.key === undefined) v.key = '';
     if (v.value === undefined) v.value = '';
   });
+  if (!Array.isArray(env.platforms)) env.platforms = [];
+  env.platforms = env.platforms
+    .map((platform) => {
+      if (typeof platform === 'string') return { id: generateUniqueId(), name: platform, value: platform };
+      return {
+        id: platform.id || generateUniqueId(),
+        name: platform.name || platform.value || '',
+        value: platform.value || platform.name || '',
+      };
+    })
+    .filter((platform) => platform.value);
+  if (env.activePlatformId && !env.platforms.some((platform) => platform.id === env.activePlatformId)) {
+    env.activePlatformId = '';
+  }
   return env;
 }
 
+function ensurePlatformsShape() {
+  if (!Array.isArray(data.platforms)) data.platforms = [];
+  data.platforms = data.platforms
+    .map((platform) => {
+      if (typeof platform === 'string') return { id: generateUniqueId(), name: platform, value: platform };
+      return {
+        id: platform.id || generateUniqueId(),
+        name: platform.name || platform.value || '',
+        value: platform.value || platform.name || '',
+      };
+    })
+    .filter((platform) => platform.value);
+
+  if (!Array.isArray(data.environments)) data.environments = [];
+  data.environments.forEach(ensureEnvironmentShape);
+
+  const activeEnv = getActiveEnvironmentRecord();
+  if (activeEnv && activeEnv.platforms.length === 0 && data.platforms.length > 0) {
+    activeEnv.platforms = data.platforms.map((platform) => ({ ...platform }));
+    if (data.activePlatformId && activeEnv.platforms.some((platform) => platform.id === data.activePlatformId)) {
+      activeEnv.activePlatformId = data.activePlatformId;
+    }
+  }
+}
+
+function getActiveEnvironmentRecord() {
+  if (!data.activeEnvironmentId || !Array.isArray(data.environments)) return null;
+  const env = data.environments.find((e) => e.id === data.activeEnvironmentId) || null;
+  if (env) ensureEnvironmentShape(env);
+  return env;
+}
+
+function getActivePlatform() {
+  ensurePlatformsShape();
+  const env = getActiveEnvironmentRecord();
+  if (!env || !env.activePlatformId) return null;
+  return env.platforms.find((platform) => platform.id === env.activePlatformId) || null;
+}
+
 function getActiveEnvironment() {
-  if (!data.activeEnvironmentId || !data.environments) return {};
-  const env = data.environments.find((e) => e.id === data.activeEnvironmentId);
-  if (!env) return {};
-  ensureEnvironmentShape(env);
   const res = {};
-  env.variables.forEach((v) => {
-    if (v.enabled !== false && v.key) res[v.key] = v.value;
-  });
+  const platform = getActivePlatform();
+  const env = getActiveEnvironmentRecord();
+  if (env) {
+    env.variables.forEach((v) => {
+      if (v.enabled !== false && v.key) res[v.key] = v.value;
+    });
+  }
+  if (platform) res.platform = platform.value;
   return res;
 }
 
@@ -805,7 +861,8 @@ function getEnvironmentStats(env) {
   ensureEnvironmentShape(env);
   const total = env.variables.length;
   const enabled = env.variables.filter((v) => v.enabled !== false && v.key).length;
-  return { total, enabled };
+  const platforms = env.platforms.length;
+  return { total, enabled, platforms };
 }
 
 function isSecretEnvKey(key) {
@@ -846,12 +903,67 @@ function updateEnvironmentSelector() {
     environmentSelect.value = data.activeEnvironmentId;
 }
 
+function updatePlatformSelector() {
+  if (!platformSelect) return;
+  ensurePlatformsShape();
+  const env = getActiveEnvironmentRecord();
+  platformSelect.innerHTML = env ? '<option value="">No Platform</option>' : '<option value="">Select environment first</option>';
+  platformSelect.disabled = !env;
+  if (addPlatformBtn) addPlatformBtn.disabled = !env;
+  if (!env) return;
+  env.platforms.forEach((platform) => {
+    const option = document.createElement('option');
+    option.value = platform.id;
+    option.textContent = platform.name === platform.value ? platform.value : `${platform.name} (${platform.value})`;
+    platformSelect.appendChild(option);
+  });
+  platformSelect.value = env.activePlatformId || '';
+}
+
 environmentSelect.addEventListener('change', () => {
   data.activeEnvironmentId = environmentSelect.value || null;
+  updatePlatformSelector();
   saveData();
   renderRightPanel();
   toast(`Окружение: ${environmentSelect.options[environmentSelect.selectedIndex].text}`, 'info', 1500);
 });
+
+if (platformSelect)
+  platformSelect.addEventListener('change', () => {
+    const env = getActiveEnvironmentRecord();
+    if (!env) return;
+    env.activePlatformId = platformSelect.value || '';
+    saveData();
+    const platform = getActivePlatform();
+    toast(platform ? `Platform: ${platform.value}` : 'Platform disabled', 'info', 1500);
+  });
+
+if (addPlatformBtn)
+  addPlatformBtn.addEventListener('click', async () => {
+    const env = getActiveEnvironmentRecord();
+    if (!env) {
+      toast('Select environment first', 'warning');
+      return;
+    }
+    const value = await showInputModal('Platform host prefix', 'goa-rostov');
+    const platformValue = (value || '').trim();
+    if (!platformValue) return;
+    ensurePlatformsShape();
+    const existing = env.platforms.find((platform) => platform.value.toLowerCase() === platformValue.toLowerCase());
+    if (existing) {
+      env.activePlatformId = existing.id;
+      updatePlatformSelector();
+      saveData();
+      toast(`Platform: ${existing.value}`, 'info', 1500);
+      return;
+    }
+    const platform = { id: generateUniqueId(), name: platformValue, value: platformValue };
+    env.platforms.push(platform);
+    env.activePlatformId = platform.id;
+    updatePlatformSelector();
+    saveData();
+    toast(`Added platform: ${platform.value}`, 'success');
+  });
 
 // Right Panel
 if (toggleRightPanelBtn) toggleRightPanelBtn.addEventListener('click', () => rightPanel.classList.toggle('hidden'));
@@ -885,7 +997,7 @@ function renderRightPanel() {
   const title = document.createElement('div');
   title.className = 'env-panel-title';
   title.append(txt('strong', env.name));
-  title.append(txt('span', `${stats.enabled} активных из ${stats.total}`));
+  title.append(txt('span', `${stats.enabled} активных из ${stats.total} · ${stats.platforms} platforms`));
   const actions = document.createElement('div');
   actions.className = 'env-panel-actions';
   actions.append(
@@ -1015,7 +1127,7 @@ function createEnvironmentFromInput() {
     toast('Окружение с таким названием уже есть', 'warning');
     return;
   }
-  const newEnv = { id: generateUniqueId(), name, variables: [{ key: '', value: '', enabled: true }] };
+  const newEnv = { id: generateUniqueId(), name, variables: [{ key: '', value: '', enabled: true }], platforms: [] };
   data.environments.push(newEnv);
   data.activeEnvironmentId = newEnv.id;
   saveData().then(() => {
@@ -1054,7 +1166,7 @@ function renderEnvList() {
     const ttl = document.createElement('div');
     ttl.className = 'env-manager-title';
     ttl.append(txt('strong', env.name));
-    ttl.append(txt('span', `${stats.enabled}/${stats.total} переменных`));
+    ttl.append(txt('span', `${stats.enabled}/${stats.total} переменных · ${stats.platforms} platforms`));
     const acts = document.createElement('div');
     const selectBtn = makeEnvActionButton('Открыть', 'Выбрать и открыть переменные', () => {
       data.activeEnvironmentId = env.id;
@@ -1087,6 +1199,8 @@ function renderEnvList() {
         id: generateUniqueId(),
         name: `${env.name} copy`,
         variables: env.variables.map((v) => ({ ...v })),
+        platforms: (env.platforms || []).map((platform) => ({ ...platform, id: generateUniqueId() })),
+        activePlatformId: '',
       };
       data.environments.push(copy);
       data.activeEnvironmentId = copy.id;
@@ -1368,7 +1482,10 @@ if (importAppDataBtn) {
       renderTabs();
       await loadData();
       const c = res.counts || {};
-      toast(`Backup восстановлен: ${c.collections || 0} коллекций, ${c.environments || 0} окружений`, 'success');
+      toast(
+        `Backup восстановлен: ${c.collections || 0} коллекций, ${c.environments || 0} окружений, ${c.platforms || 0} платформ`,
+        'success',
+      );
     } catch (e) {
       toast('Ошибка импорта: ' + e.message, 'error');
     }
@@ -4176,6 +4293,7 @@ async function loadData() {
     if (!data.folders) data.folders = [];
     if (!data.collections) data.collections = [];
     if (!data.environments) data.environments = [];
+    ensurePlatformsShape();
     data.folders.forEach((f) => {
       if (f.parentId === undefined) f.parentId = null;
       if (f.collapsed === undefined) f.collapsed = false;
@@ -4197,11 +4315,12 @@ async function loadData() {
     renderTree();
     renderTabs();
     updateEnvironmentSelector();
+    updatePlatformSelector();
     updateHistoryFilter();
     renderRightPanel();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
-    data = { folders: [], collections: [], environments: [] };
+    data = { folders: [], collections: [], environments: [], platforms: [] };
     toast('Ошибка загрузки данных', 'error');
   }
 }
@@ -4215,6 +4334,7 @@ async function saveData() {
     console.error('⚠️ ВНИМАНИЕ: data.environments отсутствует!');
     data.environments = [];
   }
+  ensurePlatformsShape();
   await window.api.saveData(data);
 }
 

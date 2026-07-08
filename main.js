@@ -364,7 +364,7 @@ ipcMain.handle('get-recent-collections', async () => {
 // ================== Data (Async Write) ==================
 function migrateOldData() {
   if (fs.existsSync(dataPath)) return;
-  const data = { folders: [], collections: [], environments: [] };
+  const data = { folders: [], collections: [], environments: [], platforms: [] };
   if (fs.existsSync(oldCollectionsPath)) {
     try {
       const old = JSON.parse(fs.readFileSync(oldCollectionsPath, 'utf8'));
@@ -381,6 +381,8 @@ function readData() {
     if (!d.folders) d.folders = [];
     if (!d.collections) d.collections = [];
     if (!d.environments) d.environments = [];
+    if (!d.platforms) d.platforms = [];
+    if (!d.activePlatformId) d.activePlatformId = '';
     if (!d.recentCollections) d.recentCollections = [];
     cleanExpiredRecentCollections(d);
 
@@ -398,7 +400,7 @@ function readData() {
     });
 
     return d;
-  } catch { return { folders: [], collections: [], environments: [], recentCollections: [] }; }
+  } catch { return { folders: [], collections: [], environments: [], platforms: [], activePlatformId: '', recentCollections: [] }; }
 }
 
 let lastWrittenJson = '';
@@ -454,7 +456,9 @@ function normalizeImportedAppData(input) {
     folders: Array.isArray(importedData.folders) ? importedData.folders : [],
     collections: Array.isArray(importedData.collections) ? importedData.collections : [],
     environments: Array.isArray(importedData.environments) ? importedData.environments : [],
+    platforms: Array.isArray(importedData.platforms) ? importedData.platforms : [],
     activeEnvironmentId: importedData.activeEnvironmentId || '',
+    activePlatformId: importedData.activePlatformId || '',
     recentCollections: Array.isArray(importedData.recentCollections) ? importedData.recentCollections : [],
   };
 }
@@ -507,6 +511,7 @@ ipcMain.handle('import-app-backup', async () => {
         folders: nextData.folders.length,
         collections: nextData.collections.length,
         environments: nextData.environments.length,
+        platforms: nextData.environments.reduce((sum, env) => sum + (Array.isArray(env.platforms) ? env.platforms.length : 0), 0),
         history: nextHistory.length,
       },
     };

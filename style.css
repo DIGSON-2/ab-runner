@@ -585,49 +585,80 @@ body {
   box-shadow: none;
 }
 
-.environment-selector {
+.target-selector {
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  padding: 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-sidebar);
   flex-shrink: 0;
 }
 
-.environment-selector select {
-  flex: 1;
-  padding: 8px 10px;
-  font-size: 13px;
+.target-selector-row {
+  display: grid;
+  gap: 6px;
+}
+
+.environment-selector {
+  grid-template-columns: minmax(0, 1fr) 42px 42px;
+}
+
+.platform-selector {
+  grid-template-columns: minmax(0, 1fr) 42px;
+}
+
+.environment-selector select,
+.platform-selector select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   cursor: pointer;
-  min-width: 0;
+  font-size: 12px;
   transition: border-color var(--transition-fast);
 }
 
-.environment-selector select:focus {
+.environment-selector select:focus,
+.platform-selector select:focus {
   outline: none;
   border-color: var(--accent);
 }
 
-.environment-selector button {
-  padding: 8px 12px;
-  font-size: 13px;
+.environment-selector button,
+.platform-selector button {
+  width: 42px;
+  min-width: 42px;
+  min-height: 32px;
+  padding: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--text-primary);
+  color: var(--text-secondary);
+  box-shadow: none;
   cursor: pointer;
-  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
   transition: all var(--transition-fast);
 }
 
-.environment-selector button:hover {
+.environment-selector button:hover,
+.platform-selector button:hover {
   background: var(--accent);
-  color: var(--button-text);
   border-color: var(--accent);
+  color: var(--button-text);
+}
+
+.environment-selector button:disabled,
+.platform-selector button:disabled,
+.environment-selector select:disabled,
+.platform-selector select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .sidebar-search {

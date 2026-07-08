@@ -1,6 +1,6 @@
 {
   "name": "ab-runner",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "author": "DIGSON-2 <andranikbaldryan55@gmail.com>",
   "description": "AB Runner – настольное приложение для автоматизированной отправки HTTP-запросов с подстановкой данных из JSON-файлов.",
   "main": "main.js",

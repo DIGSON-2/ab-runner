@@ -69,12 +69,21 @@
             </div>
 
             <!-- Окружения -->
-            <div class="environment-selector">
-                <select id="environmentSelect" title="Выберите окружение">
-                    <option value="">No Environment</option>
-                </select>
-                <button id="manageEnvBtnGlobal" title="Управление окружениями">⚙️</button>
-                <button id="toggleRightPanelBtn" title="Панель переменных">📋</button>
+            <div class="target-selector">
+                <div class="target-selector-row environment-selector">
+                    <select id="environmentSelect" title="Select environment">
+                        <option value="">No Environment</option>
+                    </select>
+                    <button id="manageEnvBtnGlobal" title="Manage environments">Env</button>
+                    <button id="toggleRightPanelBtn" title="Variables panel">{}</button>
+                </div>
+
+                <div class="target-selector-row platform-selector">
+                    <select id="platformSelect" title="Active platform for {{platform}}">
+                        <option value="">No Platform</option>
+                    </select>
+                    <button id="addPlatformBtn" title="Add platform">Add</button>
+                </div>
             </div>
 
             <!-- Поиск -->

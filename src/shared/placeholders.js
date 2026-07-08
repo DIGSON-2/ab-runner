@@ -6,9 +6,8 @@ function replacePlaceholders(template, item, environment = {}, options = {}) {
   const cleaned = cleanString(template);
   const { toJson = false } = options;
   const env = environment && typeof environment === 'object' ? environment : {};
-
-  if (item === null || typeof item !== 'object') {
-    return cleaned.replace(/{([^{}]+)}/g, (match, pathStr) => {
+  const resolveValue = (match, pathStr) => {
+    if (item === null || typeof item !== 'object') {
       if (pathStr === 'id') return String(item ?? '');
       if (pathStr in env) {
         const v = env[pathStr];
@@ -17,10 +16,8 @@ function replacePlaceholders(template, item, environment = {}, options = {}) {
         return String(v);
       }
       return match;
-    });
-  }
+    }
 
-  return cleaned.replace(/{([^{}]+)}/g, (match, pathStr) => {
     const keys = pathStr.split('.');
     let value = item;
     let foundInItem = true;
@@ -52,7 +49,11 @@ function replacePlaceholders(template, item, environment = {}, options = {}) {
     }
 
     return match;
-  });
+  };
+
+  return cleaned.replace(/\{\{([^{}]+)\}\}|{([^{}]+)}/g, (match, doublePath, singlePath) =>
+    resolveValue(match, (doublePath || singlePath).trim()),
+  );
 }
 
 module.exports = { replacePlaceholders };

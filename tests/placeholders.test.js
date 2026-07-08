@@ -18,8 +18,15 @@ describe('replacePlaceholders', () => {
     expect(replacePlaceholders('{baseUrl}/x', { id: 1 }, { baseUrl: 'https://api' })).toBe('https://api/x');
   });
 
+  test('supports double-brace environment placeholders', () => {
+    expect(replacePlaceholders('http://{{platform}}.wmsx.fmlogistic.ru', {}, { platform: 'ekb' })).toBe(
+      'http://ekb.wmsx.fmlogistic.ru',
+    );
+  });
+
   test('leaves unknown placeholders untouched', () => {
     expect(replacePlaceholders('{missing}', { id: 1 })).toBe('{missing}');
+    expect(replacePlaceholders('{{missing}}', { id: 1 })).toBe('{{missing}}');
   });
 
   test('treats primitive item as {id}', () => {
