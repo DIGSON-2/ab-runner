@@ -538,12 +538,13 @@ body {
 }
 
 .update-panel {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-sidebar);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  align-items: center;
   flex-shrink: 0;
 }
 
@@ -572,14 +573,13 @@ body {
 }
 
 .update-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 8px;
 }
 
 .update-actions button {
-  min-height: 32px;
-  padding: 0 10px;
+  min-height: 30px;
+  padding: 0 12px;
   justify-content: center;
   font-size: 12px;
   box-shadow: none;
@@ -605,7 +605,7 @@ body {
 }
 
 .platform-selector {
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) 42px 42px;
 }
 
 .environment-selector select,
@@ -729,16 +729,74 @@ body {
 }
 
 .sidebar-footer {
-  padding: 16px 12px;
+  padding: 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   flex-shrink: 0;
 }
 
 /* ================== Global Toolbar & Import Dropdown ================== */
+.functions-dropdown {
+  position: relative;
+  width: 100%;
+}
+
+.sidebar-functions-btn {
+  width: 100%;
+  min-height: 40px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sidebar-functions-btn::before {
+  content: '⚙';
+  color: var(--accent);
+}
+
+.sidebar-functions-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.sidebar-functions-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  padding: 10px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: all var(--transition-fast);
+  z-index: 250;
+}
+
+.sidebar-functions-menu.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
 .global-toolbar {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -1648,6 +1706,50 @@ textarea {
 
 #progress:empty {
   display: none;
+}
+
+.context-runner-panel {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.context-runner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.context-runner-header strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.context-runner-header span {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.context-runner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.context-runner-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  box-shadow: none;
 }
 
 .results-table {
@@ -2686,6 +2788,29 @@ textarea {
 
 .step-tab-content.active {
   display: block;
+}
+
+.documentation-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.step-documentation {
+  min-height: 260px;
+  width: 100%;
+  resize: vertical;
+  line-height: 1.6;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+}
+
+.step-documentation:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.1);
 }
 
 .url-method-row {

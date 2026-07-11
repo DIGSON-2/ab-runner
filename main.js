@@ -10,6 +10,8 @@ const { replacePlaceholders } = require('./src/shared/placeholders');
 const { buildHeaders } = require('./src/shared/auth');
 const { executeScript } = require('./src/shared/scriptRunner');
 
+app.commandLine.appendSwitch('disable-http2');
+
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';
 
@@ -116,6 +118,14 @@ function sendUpdaterEvent(channel, payload = {}) {
   }
 }
 
+function formatUpdaterError(err) {
+  const message = err?.message || String(err);
+  if (message.includes('ERR_HTTP2_PROTOCOL_ERROR')) {
+    return 'Ошибка соединения с GitHub release assets (HTTP/2). В этой версии включен обход через HTTP/1.1. Если ошибка осталась, скачайте установщик вручную с GitHub Releases.';
+  }
+  return message;
+}
+
 function initAutoUpdater() {
   if (!app.isPackaged) {
     console.log('Auto updater disabled: app is not packaged');
@@ -124,6 +134,10 @@ function initAutoUpdater() {
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.requestHeaders = {
+    'Cache-Control': 'no-cache',
+    'User-Agent': `AB Runner/${app.getVersion()}`,
+  };
 
   autoUpdater.on('checking-for-update', () => {
     console.log('Checking for updates...');
@@ -144,8 +158,9 @@ function initAutoUpdater() {
 
   autoUpdater.on('error', (err) => {
     console.error('Auto update error:', err);
-    sendUpdaterEvent('update-error', { message: err.message || String(err) });
-    sendUpdaterEvent('update-status', { status: 'error', message: err.message || String(err) });
+    const message = formatUpdaterError(err);
+    sendUpdaterEvent('update-error', { message });
+    sendUpdaterEvent('update-status', { status: 'error', message });
   });
 
   autoUpdater.on('download-progress', (progress) => {
@@ -163,7 +178,7 @@ function initAutoUpdater() {
 
   autoUpdater.checkForUpdatesAndNotify().catch((err) => {
     console.error('Update check error:', err);
-    sendUpdaterEvent('update-error', { message: err.message || String(err) });
+    sendUpdaterEvent('update-error', { message: formatUpdaterError(err) });
   });
 }
 
@@ -177,7 +192,7 @@ ipcMain.handle('check-for-updates', async () => {
     return { success: true, updateInfo: result?.updateInfo || null };
   } catch (e) {
     console.error('Manual update check error:', e);
-    return { success: false, error: e.message || String(e) };
+    return { success: false, error: formatUpdaterError(e) };
   }
 });
 
@@ -640,9 +655,9 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         let requestBody = null;
         let requestHeaders = {};
         let requestMethod = step.method;
+        let stepEnv = env;
 
         try {
-          const stepEnv = env;
           const requestState = buildStepRequestState(step, item, stepEnv);
           currentUrl = requestState.url;
           requestBody = serializeRequestBody(requestState.body);
@@ -670,7 +685,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               requestTimes.push(requestDuration);
               addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status: 0, success: false, error: `Pre-request script error: ${scriptResult.error}`, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
               const avgTime = getAvgTime(requestTimes);
-              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: `Script: ${scriptResult.error}`, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: null });
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: `Script: ${scriptResult.error}`, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: null });
               continue;
             }
 
@@ -683,7 +698,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               requestMethod = requestState.method;
               addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders });
               const avgTime = getAvgTime(requestTimes);
-              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
               continue;
             }
 
@@ -741,7 +756,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -752,7 +767,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status, success: false, error: e.message, responseData: e.response?.data, responseHeaders: e.response?.headers, requestBody, requestHeaders });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestBody, requestHeaders, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestBody, requestHeaders, environment: stepEnv || env, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
         }
 
         if (delay > 0) {
@@ -771,7 +786,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
   // Track collection usage
   updateRecentCollection(collectionName, 'executed');
 
-  return { success: !wasCancelled, totalExecuted: counter, totalTime: Date.now() - startTime, avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0, cancelled: wasCancelled };
+  return { success: !wasCancelled, totalExecuted: counter, totalTime: Date.now() - startTime, avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0, cancelled: wasCancelled, environment: env };
 });
 
 // ================== Stop Collection ==================
@@ -837,7 +852,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
       if (!scriptResult.success) {
         if (scriptResult.abortCollection) throw new Error(`Aborted: ${scriptResult.error}`);
-        const errorResult = { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody, requestHeaders };
+        const errorResult = { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody, requestHeaders, environment: env };
         addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: false, error: errorResult.statusText, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
         if (collectionName) updateRecentCollection(collectionName, 'executed');
         return errorResult;
@@ -848,7 +863,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
         requestHeaders = requestState.headers;
         addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
         if (collectionName) updateRecentCollection(collectionName, 'executed');
-        return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers };
+        return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
       }
 
       if (scriptResult.env) Object.assign(env, scriptResult.env);
@@ -886,9 +901,9 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
-    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers };
+    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
   } catch (e) {
-    const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {} } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {} };
+    const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {}, environment: env } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {}, environment: env };
 
     addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
 

@@ -83,6 +83,7 @@
                         <option value="">No Platform</option>
                     </select>
                     <button id="addPlatformBtn" title="Add platform">Add</button>
+                    <button id="deletePlatformBtn" title="Delete selected platform">Del</button>
                 </div>
             </div>
 
@@ -96,7 +97,10 @@
 
             <!-- Футер сайдбара -->
             <div class="sidebar-footer">
-                <div class="global-toolbar">
+                <div class="functions-dropdown">
+                    <button id="sidebarFunctionsBtn" class="sidebar-functions-btn">Функции</button>
+                    <div id="sidebarFunctionsMenu" class="sidebar-functions-menu">
+                        <div class="global-toolbar">
                     <button id="globalJsonGeneratorBtn" title="Создать JSON">{} JSON</button>
 
                     <div class="import-dropdown">
@@ -115,6 +119,8 @@
                         <div id="appDataMenu" class="dropdown-menu">
                             <button id="exportAppDataBtn" title="Экспортировать все данные приложения">⇧ Экспорт backup</button>
                             <button id="importAppDataBtn" title="Импортировать backup и заменить текущие данные">⇩ Восстановить backup</button>
+                        </div>
+                    </div>
                         </div>
                     </div>
                 </div>
@@ -200,13 +206,23 @@
                     </div>
                 </div>
 
-                <div class="tabs">
+                <div class="tabs local-history-tabs" style="display: none;">
                     <button class="tab-btn active" data-tab="runner">Раннер</button>
                     <button class="tab-btn" data-tab="history">История</button>
                 </div>
 
                 <!-- Вкладка Раннер -->
-                <div id="runnerTab">
+                <div id="runnerTab" class="context-runner-panel" style="display: none;">
+                    <div class="context-runner-header">
+                        <div>
+                            <strong>Результаты запуска</strong>
+                            <span>Двойной клик по строке откроет детали. Полная история сохраняется отдельно.</span>
+                        </div>
+                        <div class="context-runner-actions">
+                            <button id="openHistoryFromRunnerBtn" class="secondary">История</button>
+                            <button id="hideRunnerResultsBtn" class="secondary">Скрыть</button>
+                        </div>
+                    </div>
                     <table id="runnerResultsTable" class="results-table">
                         <thead>
                             <tr>

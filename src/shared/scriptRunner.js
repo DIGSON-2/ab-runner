@@ -18,7 +18,7 @@ async function executeScript(code, context, timeout = 5000) {
     let resolved = false;
 
     const wrappedCode = `
-(async () => {
+return (async () => {
   ${code}
 })()
 `;

@@ -18,7 +18,6 @@ const DEFAULT_OPEN_TABS_LIMIT = 10;
 const MIN_OPEN_TABS_LIMIT = 1;
 const MAX_OPEN_TABS_LIMIT = 30;
 let openTabsLimit = readOpenTabsLimit();
-let isRunning = false 
 // ================== DOM Elements ==================
 const treeContainer = document.getElementById('treeContainer');
 const workspaceTabsBar = document.getElementById('workspaceTabsBar');
@@ -36,6 +35,8 @@ const delayInput = document.getElementById('delayInput');
 const progressEl = document.getElementById('progress');
 const runnerResultsBody = document.querySelector('#runnerResultsTable tbody');
 const historyTableBody = document.querySelector('#historyTable tbody');
+const hideRunnerResultsBtn = document.getElementById('hideRunnerResultsBtn');
+const openHistoryFromRunnerBtn = document.getElementById('openHistoryFromRunnerBtn');
 const themeToggleBtn = document.getElementById('themeToggleBtn');
 const themeNameEl = document.getElementById('themeName');
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -78,6 +79,7 @@ const installUpdateBtn = document.getElementById('installUpdateBtn');
 const environmentSelect = document.getElementById('environmentSelect');
 const platformSelect = document.getElementById('platformSelect');
 const addPlatformBtn = document.getElementById('addPlatformBtn');
+const deletePlatformBtn = document.getElementById('deletePlatformBtn');
 const manageEnvBtnGlobal = document.getElementById('manageEnvBtnGlobal');
 const envManagerModal = document.getElementById('envManagerModal');
 const envListContainer = document.getElementById('envListContainer');
@@ -128,6 +130,8 @@ const globalImportBtn = document.getElementById('globalImportBtn');
 const importDropdownMenu = document.getElementById('importDropdownMenu');
 const importFilesBtn = document.getElementById('importFilesBtn');
 const importFolderBtn = document.getElementById('importFolderBtn');
+const sidebarFunctionsBtn = document.getElementById('sidebarFunctionsBtn');
+const sidebarFunctionsMenu = document.getElementById('sidebarFunctionsMenu');
 const appDataBtn = document.getElementById('appDataBtn');
 const appDataMenu = document.getElementById('appDataMenu');
 const exportAppDataBtn = document.getElementById('exportAppDataBtn');
@@ -456,15 +460,17 @@ function confirmDialog(title, msg) {
     requestAnimationFrame(() => d.classList.add('show'));
   });
 }
-function showInputModal(title, def) {
+function showInputModal(title, def, placeholder = '') {
   return new Promise((res) => {
     inputModalTitle.textContent = title;
     inputModalField.value = def || '';
+    inputModalField.placeholder = placeholder;
     inputModalField.style.display = 'block';
     inputModal.classList.add('active');
     inputModalField.focus();
     const cleanup = () => {
       inputModal.classList.remove('active');
+      inputModalField.placeholder = '';
       inputModalOkBtn.removeEventListener('click', onOk);
       inputModalCancelBtn.removeEventListener('click', onCancel);
       inputModalField.removeEventListener('keydown', onKey);
@@ -504,6 +510,28 @@ function normalizeStepScripts(step) {
     prerequest: normalizeScriptConfig(step.scripts?.prerequest),
     postresponse: normalizeScriptConfig(step.scripts?.postresponse),
   };
+
+  if (step.documentation == null) step.documentation = '';
+  if (!['headers', 'auth', 'body', 'scripts', 'documentation'].includes(step.activeTab)) step.activeTab = 'body';
+}
+
+function applyRuntimeEnvironmentValues(values = {}) {
+  const env = getActiveEnvironmentRecord();
+  if (!env || !values || typeof values !== 'object') return;
+  ensureEnvironmentShape(env);
+  Object.entries(values).forEach(([key, value]) => {
+    if (!key || key === 'platform') return;
+    const existing = env.variables.find((item) => item.key === key);
+    if (existing) {
+      existing.value = value == null ? '' : String(value);
+      existing.enabled = existing.enabled !== false;
+    } else {
+      env.variables.push({ key, value: value == null ? '' : String(value), enabled: true });
+    }
+  });
+  updateEnvironmentSelector();
+  renderRightPanel();
+  debouncedSave();
 }
 
 async function renderAppVersion() {
@@ -822,11 +850,15 @@ function ensurePlatformsShape() {
   data.environments.forEach(ensureEnvironmentShape);
 
   const activeEnv = getActiveEnvironmentRecord();
-  if (activeEnv && activeEnv.platforms.length === 0 && data.platforms.length > 0) {
-    activeEnv.platforms = data.platforms.map((platform) => ({ ...platform }));
-    if (data.activePlatformId && activeEnv.platforms.some((platform) => platform.id === data.activePlatformId)) {
-      activeEnv.activePlatformId = data.activePlatformId;
+  if (activeEnv && data.platforms.length > 0) {
+    if (activeEnv.platforms.length === 0) {
+      activeEnv.platforms = data.platforms.map((platform) => ({ ...platform }));
+      if (data.activePlatformId && activeEnv.platforms.some((platform) => platform.id === data.activePlatformId)) {
+        activeEnv.activePlatformId = data.activePlatformId;
+      }
     }
+    data.platforms = [];
+    data.activePlatformId = '';
   }
 }
 
@@ -910,6 +942,7 @@ function updatePlatformSelector() {
   platformSelect.innerHTML = env ? '<option value="">No Platform</option>' : '<option value="">Select environment first</option>';
   platformSelect.disabled = !env;
   if (addPlatformBtn) addPlatformBtn.disabled = !env;
+  if (deletePlatformBtn) deletePlatformBtn.disabled = !env || !env.activePlatformId;
   if (!env) return;
   env.platforms.forEach((platform) => {
     const option = document.createElement('option');
@@ -918,6 +951,7 @@ function updatePlatformSelector() {
     platformSelect.appendChild(option);
   });
   platformSelect.value = env.activePlatformId || '';
+  if (deletePlatformBtn) deletePlatformBtn.disabled = !env.activePlatformId;
 }
 
 environmentSelect.addEventListener('change', () => {
@@ -945,7 +979,7 @@ if (addPlatformBtn)
       toast('Select environment first', 'warning');
       return;
     }
-    const value = await showInputModal('Platform host prefix', 'goa-rostov');
+    const value = await showInputModal('Platform host prefix', '', 'ekb, msk, spb...');
     const platformValue = (value || '').trim();
     if (!platformValue) return;
     ensurePlatformsShape();
@@ -963,6 +997,23 @@ if (addPlatformBtn)
     updatePlatformSelector();
     saveData();
     toast(`Added platform: ${platform.value}`, 'success');
+  });
+
+if (deletePlatformBtn)
+  deletePlatformBtn.addEventListener('click', async () => {
+    const env = getActiveEnvironmentRecord();
+    const platform = getActivePlatform();
+    if (!env || !platform) {
+      toast('Select platform first', 'warning');
+      return;
+    }
+    if (!(await confirmDialog('Delete platform', `Delete platform "${platform.value}" from "${env.name}"?`))) return;
+    env.platforms = env.platforms.filter((item) => item.id !== platform.id);
+    env.activePlatformId = '';
+    updatePlatformSelector();
+    renderRightPanel();
+    saveData();
+    toast(`Deleted platform: ${platform.value}`, 'success');
   });
 
 // Right Panel
@@ -1337,6 +1388,8 @@ function parsePostmanItems(items, pId) {
         url: '',
         auth: '',
         body: '',
+        documentation: '',
+        activeTab: 'body',
         contentType: 'application/json',
         customHeaders: [],
       };
@@ -1404,6 +1457,23 @@ function parsePostmanItems(items, pId) {
 }
 
 // ================== Import Dropdown ==================
+function closeSidebarFunctionMenus() {
+  sidebarFunctionsMenu?.classList.remove('show');
+  importDropdownMenu?.classList.remove('show');
+  appDataMenu?.classList.remove('show');
+}
+
+if (sidebarFunctionsBtn) {
+  sidebarFunctionsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sidebarFunctionsMenu?.classList.toggle('show');
+    importDropdownMenu?.classList.remove('show');
+    appDataMenu?.classList.remove('show');
+  });
+}
+if (sidebarFunctionsMenu) {
+  sidebarFunctionsMenu.addEventListener('click', (e) => e.stopPropagation());
+}
 if (globalImportBtn) {
   globalImportBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1419,6 +1489,9 @@ if (appDataBtn) {
   });
 }
 document.addEventListener('click', (e) => {
+  if (sidebarFunctionsMenu && !sidebarFunctionsMenu.contains(e.target) && e.target !== sidebarFunctionsBtn) {
+    sidebarFunctionsMenu.classList.remove('show');
+  }
   if (importDropdownMenu && !importDropdownMenu.contains(e.target) && e.target !== globalImportBtn) {
     importDropdownMenu.classList.remove('show');
   }
@@ -1428,14 +1501,14 @@ document.addEventListener('click', (e) => {
 });
 if (importFilesBtn) {
   importFilesBtn.addEventListener('click', async () => {
-    importDropdownMenu.classList.remove('show');
+    closeSidebarFunctionMenus();
     const files = await window.api.openPostmanDialog();
     if (files && files.length > 0) await processPostmanFiles(files);
   });
 }
 if (importFolderBtn) {
   importFolderBtn.addEventListener('click', async () => {
-    importDropdownMenu.classList.remove('show');
+    closeSidebarFunctionMenus();
     const files = await window.api.openPostmanFolderDialog();
     if (files && files.length > 0) await processPostmanFiles(files);
   });
@@ -1443,7 +1516,7 @@ if (importFolderBtn) {
 
 if (exportAppDataBtn) {
   exportAppDataBtn.addEventListener('click', async () => {
-    appDataMenu?.classList.remove('show');
+    closeSidebarFunctionMenus();
     try {
       await saveData();
       const res = await window.api.exportAppBackup();
@@ -1460,7 +1533,7 @@ if (exportAppDataBtn) {
 
 if (importAppDataBtn) {
   importAppDataBtn.addEventListener('click', async () => {
-    appDataMenu?.classList.remove('show');
+    closeSidebarFunctionMenus();
     const ok = await confirmDialog(
       'Восстановить backup',
       'Текущие коллекции, окружения и история будут заменены данными из backup-файла. Продолжить?'
@@ -1477,6 +1550,7 @@ if (importAppDataBtn) {
       activeCollectionId = null;
       activeCollection = null;
       openTabs = [];
+      syncOpenTabsState();
       collectionEditorEl.style.display = 'none';
       emptyStateEl.style.display = 'block';
       renderTabs();
@@ -1621,6 +1695,7 @@ function renderFolderChildren(folderId, container, level) {
 
           // Remove closed collections from tabs
           openTabs = openTabs.filter((t) => !collectionIdsInFolders.includes(t.id));
+          syncOpenTabsState();
           renderTabs();
 
           if (activeCollectionId && collectionIdsInFolders.includes(activeCollectionId)) {
@@ -1629,6 +1704,7 @@ function renderFolderChildren(folderId, container, level) {
             } else {
               activeCollectionId = null;
               activeCollection = null;
+              syncOpenTabsState();
               showEmptyState();
             }
           }
@@ -1783,6 +1859,7 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
       const tabIdx = openTabs.findIndex((t) => t.id === col.id);
       if (tabIdx !== -1) {
         openTabs.splice(tabIdx, 1);
+        syncOpenTabsState();
         renderTabs();
       }
 
@@ -1793,6 +1870,7 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
         } else {
           activeCollectionId = null;
           activeCollection = null;
+          syncOpenTabsState();
           showEmptyState();
         }
       }
@@ -1852,11 +1930,14 @@ function renderCollectionItem(col, container, lvl) {
     e.stopPropagation();
     if (await confirmDialog('Удалить коллекцию', 'Удалить эту коллекцию?')) {
       data.collections = data.collections.filter((c) => c.id !== col.id);
+      openTabs = openTabs.filter((t) => t.id !== col.id);
       if (activeCollectionId === col.id) {
         activeCollectionId = null;
         activeCollection = null;
         showEmptyState();
       }
+      syncOpenTabsState();
+      renderTabs();
       saveData();
       renderTree();
       toast('Коллекция удалена', 'success');
@@ -1944,6 +2025,34 @@ function limitOpenTabs() {
   }
 }
 
+function syncOpenTabsState() {
+  data.openTabs = openTabs.map((tab) => ({ id: tab.id, name: tab.name }));
+  data.activeCollectionId = activeCollectionId || '';
+}
+
+function restoreOpenTabsState() {
+  const collectionsById = new Map((data.collections || []).map((collection) => [collection.id, collection]));
+  openTabs = (Array.isArray(data.openTabs) ? data.openTabs : [])
+    .filter((tab) => tab && collectionsById.has(tab.id))
+    .map((tab) => {
+      const collection = collectionsById.get(tab.id);
+      return { id: collection.id, name: collection.name || tab.name || 'Без названия' };
+    });
+  limitOpenTabs();
+  const restoredActiveId =
+    data.activeCollectionId && openTabs.some((tab) => tab.id === data.activeCollectionId)
+      ? data.activeCollectionId
+      : openTabs[0]?.id;
+  if (restoredActiveId) {
+    activeCollectionId = restoredActiveId;
+    activeCollection = collectionsById.get(restoredActiveId) || null;
+  } else {
+    activeCollectionId = null;
+    activeCollection = null;
+  }
+  syncOpenTabsState();
+}
+
 function selectCollection(id) {
   const prev = activeCollectionId;
   if (prev && prev !== id) cleanupEmptyCollection(prev);
@@ -1956,6 +2065,7 @@ function selectCollection(id) {
     openTabs.push({ id: activeCollection.id, name: activeCollection.name });
   }
   limitOpenTabs();
+  syncOpenTabsState();
 
   // Track collection view
   window.api.updateRecentCollection(activeCollection.id, 'viewed');
@@ -1963,6 +2073,7 @@ function selectCollection(id) {
   renderCollectionEditor();
   renderTabs();
   renderTree();
+  debouncedSave();
 }
 
 function renderTabs() {
@@ -2026,12 +2137,16 @@ function closeTab(id) {
     } else {
       activeCollectionId = null;
       activeCollection = null;
+      syncOpenTabsState();
       showEmptyState();
       renderTabs();
       renderTree();
+      debouncedSave();
     }
   } else {
+    syncOpenTabsState();
     renderTabs();
+    debouncedSave();
   }
 }
 function showEmptyState() {
@@ -2047,17 +2162,16 @@ function renderCollectionEditor() {
     // Update tab name if open
     const tab = openTabs.find((t) => t.id === activeCollection.id);
     if (tab) tab.name = activeCollection.name;
+    syncOpenTabsState();
     renderTabs();
 
     debouncedSave();
     renderTree();
   };
-  if (activeCollection.results) renderRunnerTable(activeCollection.results);
-  else runnerResultsBody.innerHTML = '';
-  tabBtns.forEach((b) => b.classList.remove('active'));
-  document.querySelector('[data-tab="runner"]').classList.add('active');
-  runnerTab.style.display = 'block';
-  historyTab.style.display = 'none';
+  runnerResultsBody.innerHTML = '';
+  progressEl.innerHTML = '';
+  if (runnerTab) runnerTab.style.display = 'none';
+  if (historyTab) historyTab.style.display = 'none';
   renderSteps();
 }
 function getCollectionIcon(c) {
@@ -2237,7 +2351,11 @@ function createStepCard(step, idx) {
   crt('auth', 'Authorization');
   crt('body', 'Body');
   crt('scripts', 'Scripts');
+  crt('documentation', '\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430\u0446\u0438\u044f');
   card.appendChild(tc);
+
+  const validStepTabs = new Set(Object.keys(tb));
+  if (!validStepTabs.has(step.activeTab)) step.activeTab = 'body';
 
   Object.keys(tb).forEach((id) => {
     tb[id].onclick = () => {
@@ -2245,17 +2363,24 @@ function createStepCard(step, idx) {
       Object.values(tbc).forEach((x) => x.classList.remove('active'));
       tb[id].classList.add('active');
       tbc[id].classList.add('active');
-      if (id === 'body') {
+      step.activeTab = id;
+      debouncedSave();
+      if (id === 'body' || id === 'scripts' || id === 'documentation') {
         requestAnimationFrame(() => {
           activeEditors.forEach(({ editor }) => {
             if (editor) editor.refresh();
           });
+          setTimeout(() => {
+            activeEditors.forEach(({ editor }) => {
+              if (editor) editor.refresh();
+            });
+          }, 60);
         });
       }
     };
   });
-  tb.headers.classList.add('active');
-  tbc.headers.classList.add('active');
+  tb[step.activeTab].classList.add('active');
+  tbc[step.activeTab].classList.add('active');
 
   // ================== Headers Tab ==================
   let hArr = step.customHeaders;
@@ -2641,7 +2766,7 @@ function createStepCard(step, idx) {
     const editorId = `cm-script-${type}-${idx}-${Date.now()}`;
     const textarea = document.createElement('textarea');
     textarea.value = step.scripts[type].code;
-    const { wrapper, editor } = createCodeMirrorEditor(textarea, step.scripts[type].code, 'javascript');
+    const { wrapper, editor } = createCodeMirrorEditor(textarea, step.scripts[type].code, 'javascript', '520px');
     activeEditors.set(editorId, { editor, wrapper });
 
     if (editor) {
@@ -2662,18 +2787,49 @@ function createStepCard(step, idx) {
     postBtn.classList.remove('active');
     preContent.classList.add('active');
     postContent.classList.remove('active');
-    if (preEditorInfo.editor) preEditorInfo.editor.refresh();
+    if (preEditorInfo.editor) {
+      requestAnimationFrame(() => {
+        preEditorInfo.editor.refresh();
+        setTimeout(() => preEditorInfo.editor.refresh(), 60);
+      });
+    }
   };
   postBtn.onclick = () => {
     postBtn.classList.add('active');
     preBtn.classList.remove('active');
     postContent.classList.add('active');
     preContent.classList.remove('active');
-    if (postEditorInfo.editor) postEditorInfo.editor.refresh();
+    if (postEditorInfo.editor) {
+      requestAnimationFrame(() => {
+        postEditorInfo.editor.refresh();
+        setTimeout(() => postEditorInfo.editor.refresh(), 60);
+      });
+    }
   };
 
   scriptsContainer.append(scriptsTabs, preContent, postContent);
   tbc.scripts.appendChild(scriptsContainer);
+
+  // ================== Documentation Tab ==================
+  const documentationContainer = document.createElement('div');
+  documentationContainer.className = 'documentation-container';
+
+  const documentationHint = txt(
+    'div',
+    '\u041e\u043f\u0438\u0448\u0438\u0442\u0435, \u0447\u0442\u043e \u0434\u0435\u043b\u0430\u0435\u0442 \u044d\u0442\u043e\u0442 \u0437\u0430\u043f\u0440\u043e\u0441, \u043a\u0430\u043a\u0438\u0435 \u0434\u0430\u043d\u043d\u044b\u0435 \u0435\u043c\u0443 \u043d\u0443\u0436\u043d\u044b \u0438 \u043a\u0430\u043a\u043e\u0439 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u043e\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044f.',
+    'body-hint',
+  );
+  const documentationTextarea = document.createElement('textarea');
+  documentationTextarea.className = 'step-documentation';
+  documentationTextarea.value = step.documentation || '';
+  documentationTextarea.placeholder =
+    '\u041d\u0430\u043f\u0440\u0438\u043c\u0435\u0440: \u044d\u0442\u043e\u0442 \u0437\u0430\u043f\u0440\u043e\u0441 \u043c\u0435\u043d\u044f\u0435\u0442 \u0441\u0442\u0430\u0442\u0443\u0441 \u0437\u0430\u043a\u0430\u0437\u0430. \u041d\u0443\u0436\u0435\u043d token \u0438 id \u0437\u0430\u043a\u0430\u0437\u0430.';
+  documentationTextarea.addEventListener('input', () => {
+    step.documentation = documentationTextarea.value;
+    debouncedSave();
+  });
+  documentationContainer.append(documentationHint, documentationTextarea);
+  tbc.documentation.appendChild(documentationContainer);
 
   // ================== Body Tab ==================
   const bodyContainer = document.createElement('div');
@@ -3173,7 +3329,7 @@ function createStepCard(step, idx) {
   renderBodyForm();
   tbc.body.appendChild(bodyContainer);
 
-  card.append(tbc.headers, tbc.auth, tbc.body, tbc.scripts);
+  card.append(tbc.headers, tbc.auth, tbc.body, tbc.scripts, tbc.documentation);
 
   // ================== Save Logic ==================
   const save = () => {
@@ -3200,6 +3356,36 @@ const formatTime = (ms) => {
   return `${minutes}м ${remainingSeconds}с`;
 };
 
+let runnerAutoHideTimer = null;
+
+function showContextRunner() {
+  if (runnerAutoHideTimer) {
+    clearTimeout(runnerAutoHideTimer);
+    runnerAutoHideTimer = null;
+  }
+  if (runnerTab) runnerTab.style.display = 'block';
+}
+
+function hideContextRunner() {
+  if (runnerAutoHideTimer) {
+    clearTimeout(runnerAutoHideTimer);
+    runnerAutoHideTimer = null;
+  }
+  if (runnerTab) runnerTab.style.display = 'none';
+  if (progressEl) progressEl.innerHTML = '';
+}
+
+function scheduleRunnerAutoHide(delay = 7000) {
+  if (runnerAutoHideTimer) clearTimeout(runnerAutoHideTimer);
+  runnerAutoHideTimer = setTimeout(() => {
+    hideContextRunner();
+    runnerResultsBody.innerHTML = '';
+  }, delay);
+}
+
+if (hideRunnerResultsBtn) hideRunnerResultsBtn.addEventListener('click', hideContextRunner);
+if (openHistoryFromRunnerBtn) openHistoryFromRunnerBtn.addEventListener('click', () => globalHistoryBtn?.click());
+
 runCollectionBtn.addEventListener('click', async () => {
   if (!activeCollection || !activeCollection.steps?.length) {
     toast('Добавьте шаги', 'warning');
@@ -3210,11 +3396,6 @@ runCollectionBtn.addEventListener('click', async () => {
     toast(`Проверьте Body в шаге: ${invalidStep.name || 'без названия'}`, 'error', 6000);
     return;
   }
-  if (stopCollectionBtn) {
-    stopCollectionBtn.style.display = 'flex';
-    runCollectionBtn.style.display = 'none';
-  }
-  isRunning = true;
   let items;
   try {
     items = await readDataFile();
@@ -3222,12 +3403,18 @@ runCollectionBtn.addEventListener('click', async () => {
     toast('Ошибка файла: ' + e.message, 'error');
     return;
   }
+  if (stopCollectionBtn) {
+    stopCollectionBtn.style.display = 'flex';
+    runCollectionBtn.style.display = 'none';
+  }
   const delay = parseInt(delayInput.value, 10) || 0;
   if (!activeCollection.results) activeCollection.results = [];
   else activeCollection.results.length = 0;
+  showContextRunner();
   runnerResultsBody.innerHTML = '';
   progressEl.innerHTML =
     '<div style="color: var(--accent); font-style: italic; padding: 8px 0;">⏳ Запуск и выполнение запросов...</div>';
+  let runSucceeded = false;
   try {
     const result = await window.api.runCollection(
       activeCollection.steps,
@@ -3236,6 +3423,8 @@ runCollectionBtn.addEventListener('click', async () => {
       activeCollection.name,
       getActiveEnvironment(),
     );
+    applyRuntimeEnvironmentValues(result.environment);
+    runSucceeded = true;
     progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--success-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--success); margin-top: 12px;">
                 <div style="font-weight: 700; color: var(--success); font-size: 15px; display: flex; align-items: center; gap: 8px;">✅ Выполнение завершено!</div>
@@ -3265,11 +3454,11 @@ runCollectionBtn.addEventListener('click', async () => {
         `;
     toast('Ошибка: ' + e.message, 'error');
   }
+  if (runSucceeded) scheduleRunnerAutoHide();
   if (stopCollectionBtn) {
     stopCollectionBtn.style.display = 'none';
     runCollectionBtn.style.display = 'flex';
   }
-  isRunning = false;
   dataFileInput.value = '';
   selectedFileName.textContent = 'Файл не выбран';
 });
@@ -3303,12 +3492,12 @@ if (window.api.onStop) {
       stopCollectionBtn.style.display = 'none';
       runCollectionBtn.style.display = 'flex';
     }
-    isRunning = false;
     toast('Выполнение остановлено', 'warning');
   });
 }
 
 window.api.onProgress((progressData) => {
+  if (progressData.environment) applyRuntimeEnvironmentValues(progressData.environment);
   const {
     item,
     stepName,
@@ -3380,7 +3569,7 @@ window.api.onProgress((progressData) => {
     `;
 });
 
-function renderRunnerTable(res) {
+function _renderRunnerTable(res) {
   runnerResultsBody.innerHTML = '';
   res.forEach((r, index) => {
     const row = document.createElement('tr');
@@ -3634,6 +3823,7 @@ sendSingleBtn.addEventListener('click', async () => {
       getActiveEnvironment(),
       activeCollection?.steps || [],
     );
+    applyRuntimeEnvironmentValues(res.environment);
     sendSingleBtn.disabled = false;
     sendSingleBtn.textContent = '▶ Отправить';
     sendRequestModal.classList.remove('active');
@@ -4175,6 +4365,8 @@ if (parseCurlBtn)
       auth: p.headers['Authorization'] || '',
       body: p.body || '',
       customHeaders: {},
+      documentation: '',
+      activeTab: 'body',
     };
     delete p.headers['Authorization'];
     delete p.headers['Content-Type'];
@@ -4197,6 +4389,7 @@ if (importCurlBtn)
 
 // ================== Global Buttons & Shortcuts ==================
 newRootCollectionBtn.addEventListener('click', async () => {
+  closeSidebarFunctionMenus();
   const nc = { id: generateUniqueId(), name: 'Новая коллекция', steps: [], folderId: null };
   data.collections.push(nc);
   await saveData();
@@ -4204,6 +4397,7 @@ newRootCollectionBtn.addEventListener('click', async () => {
   renderTree();
 });
 newFolderBtn.addEventListener('click', async () => {
+  closeSidebarFunctionMenus();
   const n = await showInputModal('Название папки', 'Новая папка');
   if (n) {
     data.folders.push({ id: generateUniqueId(), name: n, parentId: null, collapsed: false });
@@ -4222,6 +4416,8 @@ addStepBtn.addEventListener('click', () => {
     contentType: 'application/json',
     auth: '',
     body: '',
+    documentation: '',
+    activeTab: 'body',
     customHeaders: [],
   });
   saveData();
@@ -4312,12 +4508,15 @@ async function loadData() {
       collections: data.collections.length,
       environments: data.environments.length,
     });
+    restoreOpenTabsState();
     renderTree();
     renderTabs();
     updateEnvironmentSelector();
     updatePlatformSelector();
     updateHistoryFilter();
     renderRightPanel();
+    if (activeCollection) renderCollectionEditor();
+    else showEmptyState();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
     data = { folders: [], collections: [], environments: [], platforms: [] };
@@ -4377,7 +4576,11 @@ const gJson = document.getElementById('globalJsonGeneratorBtn');
 const eNew = document.getElementById('emptyStateNewCollectionBtn');
 const eJson = document.getElementById('emptyStateJsonGeneratorBtn');
 const ePost = document.getElementById('emptyStateImportPostmanBtn');
-if (gJson) gJson.addEventListener('click', () => jsonModal.classList.add('active'));
+if (gJson)
+  gJson.addEventListener('click', () => {
+    closeSidebarFunctionMenus();
+    jsonModal.classList.add('active');
+  });
 if (eNew) eNew.addEventListener('click', () => newRootCollectionBtn.click());
 if (eJson) eJson.addEventListener('click', () => jsonModal.classList.add('active'));
 if (ePost)
