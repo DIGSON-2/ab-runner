@@ -3,6 +3,16 @@ import { collectionRelevance } from './search.js';
 import { formatJSON, parseJsonValue, repairJsonText } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
+import * as dom from './dom.js';
+import { generatePresetId, normalizeScriptPresets as normalizePresetList } from './scriptPresets.js';
+import { initRunnerDataDrawer } from './runnerDataDrawer.js';
+import {
+  activeEditors,
+  createBodySearchPanel,
+  createCodeMirrorEditor,
+  destroyAllEditors,
+  updateEditorsTheme,
+} from './editorManager.js';
 
 let data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
 let activeCollectionId = null;
@@ -18,168 +28,149 @@ const MIN_OPEN_TABS_LIMIT = 1;
 const MAX_OPEN_TABS_LIMIT = 30;
 let openTabsLimit = readOpenTabsLimit();
 // ================== DOM Elements ==================
-const treeContainer = document.getElementById('treeContainer');
-const workspaceTabsBar = document.getElementById('workspaceTabsBar');
-const workspaceTabsTitle = document.getElementById('workspaceTabsTitle');
-const workspaceTabsLimitInput = document.getElementById('workspaceTabsLimitInput');
-const collectionTabsEl = document.getElementById('collectionTabs');
-const searchInput = document.getElementById('searchInput');
-const emptyStateEl = document.getElementById('emptyState');
-const collectionEditorEl = document.getElementById('collectionEditor');
-const collectionNameInput = document.getElementById('collectionNameInput');
-const stepsContainer = document.getElementById('stepsContainer');
-const dataFileInput = document.getElementById('dataFileInput');
-const runnerJsonInput = document.getElementById('runnerJsonInput');
-const runnerDataInputMount = document.getElementById('runnerDataInputMount');
-const openRunnerDataDrawerBtn = document.getElementById('openRunnerDataDrawerBtn');
-const runnerDataDrawer = document.getElementById('runnerDataDrawer');
-const closeRunnerDataDrawerBtn = document.getElementById('closeRunnerDataDrawerBtn');
-const applyRunnerJsonBtn = document.getElementById('applyRunnerJsonBtn');
-const clearRunnerJsonBtn = document.getElementById('clearRunnerJsonBtn');
-const runnerJsonStatus = document.getElementById('runnerJsonStatus');
-const selectedFileName = document.getElementById('selectedFileName');
-const delayInput = document.getElementById('delayInput');
-const progressEl = document.getElementById('progress');
-const runnerResultsBody = document.querySelector('#runnerResultsTable tbody');
-const historyTableBody = document.querySelector('#historyTable tbody');
-const hideRunnerResultsBtn = document.getElementById('hideRunnerResultsBtn');
-const openHistoryFromRunnerBtn = document.getElementById('openHistoryFromRunnerBtn');
-const themeToggleBtn = document.getElementById('themeToggleBtn');
-const themeNameEl = document.getElementById('themeName');
-const tabBtns = document.querySelectorAll('.tab-btn');
-const runnerTab = document.getElementById('runnerTab');
-const historyTab = document.getElementById('historyTab');
-const historyFilter = document.getElementById('historyCollectionFilter');
-const detailModal = document.getElementById('detailModal');
-const detailContent = document.getElementById('detailContent');
-const detailModalTitle = document.getElementById('detailModalTitle');
-const closeDetailModalBtn = document.getElementById('closeDetailModalBtn');
-const sendRequestModal = document.getElementById('sendRequestModal');
-const testDataInput = document.getElementById('testDataInput');
-const sendSingleBtn = document.getElementById('sendSingleBtn');
-const closeSendModalBtn = document.getElementById('closeSendModalBtn');
-const newFolderBtn = document.getElementById('newFolderBtn');
-const newRootCollectionBtn = document.getElementById('newRootCollectionBtn');
-const addStepBtn = document.getElementById('addStepBtn');
-const runCollectionBtn = document.getElementById('runCollectionBtn');
-const stopCollectionBtn = document.getElementById('stopCollectionBtn');
-const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
-const clearHistoryBtn = document.getElementById('clearHistoryBtn');
-const clearHistoryFilterBtn = document.getElementById('clearHistoryFilterBtn');
-const jsonGeneratorBtn = document.getElementById('jsonGeneratorBtn');
-const importCurlBtn = document.getElementById('importCurlBtn');
-const inputModal = document.getElementById('inputModal');
-const inputModalField = document.getElementById('inputModalField');
-const inputModalTitle = document.getElementById('inputModalTitle');
-const inputModalOkBtn = document.getElementById('inputModalOkBtn');
-const inputModalCancelBtn = document.getElementById('inputModalCancelBtn');
-const scriptPresetModal = document.getElementById('scriptPresetModal');
-const scriptPresetManagerSelect = document.getElementById('scriptPresetManagerSelect');
-const scriptPresetNameInput = document.getElementById('scriptPresetNameInput');
-const scriptPresetDescriptionInput = document.getElementById('scriptPresetDescriptionInput');
-const scriptPresetPreInput = document.getElementById('scriptPresetPreInput');
-const scriptPresetPostInput = document.getElementById('scriptPresetPostInput');
-const newScriptPresetBtn = document.getElementById('newScriptPresetBtn');
-const saveScriptPresetBtn = document.getElementById('saveScriptPresetBtn');
-const deleteScriptPresetBtn = document.getElementById('deleteScriptPresetBtn');
-const closeScriptPresetModalBtn = document.getElementById('closeScriptPresetModalBtn');
-const sidebar = document.getElementById('sidebar');
-const resizer = document.getElementById('resizer');
-const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
-const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-const appVersionBadge = document.getElementById('appVersionBadge');
-const updateStatusEl = document.getElementById('updateStatus');
-const checkUpdateBtn = document.getElementById('checkUpdateBtn');
-const installUpdateBtn = document.getElementById('installUpdateBtn');
+const {
+  treeContainer,
+  workspaceTabsBar,
+  workspaceTabsTitle,
+  workspaceTabsLimitInput,
+  collectionTabsEl,
+  searchInput,
+  emptyStateEl,
+  collectionEditorEl,
+  collectionNameInput,
+  stepsContainer,
+  dataFileInput,
+  runnerJsonInput,
+  runnerDataInputMount,
+  openRunnerDataDrawerBtn,
+  runnerDataDrawer,
+  closeRunnerDataDrawerBtn,
+  applyRunnerJsonBtn,
+  clearRunnerJsonBtn,
+  runnerJsonStatus,
+  selectedFileName,
+  delayInput,
+  progressEl,
+  runnerResultsBody,
+  historyTableBody,
+  hideRunnerResultsBtn,
+  openHistoryFromRunnerBtn,
+  themeToggleBtn,
+  themeNameEl,
+  tabBtns,
+  runnerTab,
+  historyTab,
+  historyFilter,
+  detailModal,
+  detailContent,
+  detailModalTitle,
+  closeDetailModalBtn,
+  sendRequestModal,
+  testDataInput,
+  sendSingleBtn,
+  closeSendModalBtn,
+  newFolderBtn,
+  newRootCollectionBtn,
+  addStepBtn,
+  runCollectionBtn,
+  stopCollectionBtn,
+  refreshHistoryBtn,
+  clearHistoryBtn,
+  clearHistoryFilterBtn,
+  jsonGeneratorBtn,
+  importCurlBtn,
+  inputModal,
+  inputModalField,
+  inputModalTitle,
+  inputModalOkBtn,
+  inputModalCancelBtn,
+  scriptPresetModal,
+  scriptPresetManagerSelect,
+  scriptPresetNameInput,
+  scriptPresetDescriptionInput,
+  scriptPresetPreInput,
+  scriptPresetPostInput,
+  newScriptPresetBtn,
+  saveScriptPresetBtn,
+  deleteScriptPresetBtn,
+  closeScriptPresetModalBtn,
+  sidebar,
+  resizer,
+  toggleSidebarBtn,
+  sidebarToggleBtn,
+  appVersionBadge,
+  updateStatusEl,
+  checkUpdateBtn,
+  installUpdateBtn,
+  environmentSelect,
+  platformSelect,
+  addPlatformBtn,
+  deletePlatformBtn,
+  manageEnvBtnGlobal,
+  envManagerModal,
+  envListContainer,
+  newEnvNameInput,
+  envSearchInput,
+  createEnvBtn,
+  closeEnvManagerBtn,
+  rightPanel,
+  envVarsContainer,
+  closeRightPanelBtn,
+  toggleRightPanelBtn,
+  globalHistoryBtn,
+  globalHistoryModal,
+  globalHistoryTableBody,
+  globalHistoryFilter,
+  refreshGlobalHistoryBtn,
+  clearGlobalHistoryBtn,
+  clearGlobalHistoryFilterBtn,
+  closeGlobalHistoryBtn,
+  clearHistoryModal,
+  clearHistoryTimeFilter,
+  clearHistoryTypeFilter,
+  clearHistoryMethodFilter,
+  clearHistoryStatusFilter,
+  clearHistoryPreview,
+  closeClearHistoryModalBtn,
+  applyClearHistoryBtn,
+  jsonModal,
+  fieldsContainer,
+  addFieldBtn,
+  generateJsonBtn,
+  saveJsonBtn,
+  sendJsonToRunnerBtn,
+  closeModalBtn,
+  jsonPreview,
+  jsonPreviewContent,
+  copyJsonBtn,
+  curlModal,
+  curlInput,
+  closeCurlModalBtn,
+  parseCurlBtn,
+  globalImportBtn,
+  importDropdownMenu,
+  importFilesBtn,
+  importFolderBtn,
+  sidebarFunctionsBtn,
+  sidebarFunctionsMenu,
+  appDataBtn,
+  appDataMenu,
+  exportAppDataBtn,
+  importAppDataBtn,
+} = dom;
 
-// Environments & Right Panel
-const environmentSelect = document.getElementById('environmentSelect');
-const platformSelect = document.getElementById('platformSelect');
-const addPlatformBtn = document.getElementById('addPlatformBtn');
-const deletePlatformBtn = document.getElementById('deletePlatformBtn');
-const manageEnvBtnGlobal = document.getElementById('manageEnvBtnGlobal');
-const envManagerModal = document.getElementById('envManagerModal');
-const envListContainer = document.getElementById('envListContainer');
-const newEnvNameInput = document.getElementById('newEnvNameInput');
-const envSearchInput = document.getElementById('envSearchInput');
-const createEnvBtn = document.getElementById('createEnvBtn');
-const closeEnvManagerBtn = document.getElementById('closeEnvManagerBtn');
-const rightPanel = document.getElementById('rightPanel');
-const envVarsContainer = document.getElementById('envVarsContainer');
-const closeRightPanelBtn = document.getElementById('closeRightPanelBtn');
-const toggleRightPanelBtn = document.getElementById('toggleRightPanelBtn');
-
-// Global History & Clear Filters
-const globalHistoryBtn = document.getElementById('globalHistoryBtn');
-const globalHistoryModal = document.getElementById('globalHistoryModal');
-const globalHistoryTableBody = document.querySelector('#globalHistoryTable tbody');
-const globalHistoryFilter = document.getElementById('globalHistoryFilter');
-const refreshGlobalHistoryBtn = document.getElementById('refreshGlobalHistoryBtn');
-const clearGlobalHistoryBtn = document.getElementById('clearGlobalHistoryBtn');
-const clearGlobalHistoryFilterBtn = document.getElementById('clearGlobalHistoryFilterBtn');
-const closeGlobalHistoryBtn = document.getElementById('closeGlobalHistoryBtn');
-const clearHistoryModal = document.getElementById('clearHistoryModal');
-const clearHistoryTimeFilter = document.getElementById('clearHistoryTimeFilter');
-const clearHistoryTypeFilter = document.getElementById('clearHistoryTypeFilter');
-const clearHistoryMethodFilter = document.getElementById('clearHistoryMethodFilter');
-const clearHistoryStatusFilter = document.getElementById('clearHistoryStatusFilter');
-const clearHistoryPreview = document.getElementById('clearHistoryPreview');
-const closeClearHistoryModalBtn = document.getElementById('closeClearHistoryModalBtn');
-const applyClearHistoryBtn = document.getElementById('applyClearHistoryBtn');
-
-// JSON Generator & cURL
-const jsonModal = document.getElementById('jsonModal');
-const fieldsContainer = document.getElementById('fieldsContainer');
-const addFieldBtn = document.getElementById('addFieldBtn');
-const generateJsonBtn = document.getElementById('generateJsonBtn');
-const saveJsonBtn = document.getElementById('saveJsonBtn');
-const sendJsonToRunnerBtn = document.getElementById('sendJsonToRunnerBtn');
-const closeModalBtn = document.getElementById('closeModalBtn');
-const jsonPreview = document.getElementById('jsonPreview');
-const jsonPreviewContent = document.getElementById('jsonPreviewContent');
-const copyJsonBtn = document.getElementById('copyJsonBtn');
-const curlModal = document.getElementById('curlModal');
-const curlInput = document.getElementById('curlInput');
-const closeCurlModalBtn = document.getElementById('closeCurlModalBtn');
-const parseCurlBtn = document.getElementById('parseCurlBtn');
-
-// Import Dropdown
-const globalImportBtn = document.getElementById('globalImportBtn');
-const importDropdownMenu = document.getElementById('importDropdownMenu');
-const importFilesBtn = document.getElementById('importFilesBtn');
-const importFolderBtn = document.getElementById('importFolderBtn');
-const sidebarFunctionsBtn = document.getElementById('sidebarFunctionsBtn');
-const sidebarFunctionsMenu = document.getElementById('sidebarFunctionsMenu');
-const appDataBtn = document.getElementById('appDataBtn');
-const appDataMenu = document.getElementById('appDataMenu');
-const exportAppDataBtn = document.getElementById('exportAppDataBtn');
-const importAppDataBtn = document.getElementById('importAppDataBtn');
-
-// Runner data drawer
-if (runnerJsonInput && runnerDataInputMount) {
-  runnerDataInputMount.appendChild(runnerJsonInput);
-}
-
-function updateRunnerJsonStatus() {
-  if (!runnerJsonInput || !runnerJsonStatus) return;
-  const hasJson = runnerJsonInput.value.trim().length > 0;
-  runnerJsonStatus.dataset.ready = hasJson ? 'true' : 'false';
-  runnerJsonStatus.textContent = hasJson ? 'JSON вставлен' : 'JSON не вставлен';
-}
-
-function setRunnerDataDrawerOpen(isOpen) {
-  if (!runnerDataDrawer) return;
-  runnerDataDrawer.classList.toggle('active', isOpen);
-  runnerDataDrawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
-  if (isOpen) {
-    setTimeout(() => runnerJsonInput?.focus(), 0);
-  }
-}
-
-updateRunnerJsonStatus();
-
-// ================== CodeMirror ==================
-const activeEditors = new Map();
+const { updateRunnerJsonStatus } = initRunnerDataDrawer({
+  runnerJsonInput,
+  runnerDataInputMount,
+  runnerJsonStatus,
+  runnerDataDrawer,
+  openRunnerDataDrawerBtn,
+  closeRunnerDataDrawerBtn,
+  applyRunnerJsonBtn,
+  clearRunnerJsonBtn,
+  selectedFileName,
+  dataFileInput,
+});
 
 if (workspaceTabsLimitInput) {
   workspaceTabsLimitInput.value = String(openTabsLimit);
@@ -188,237 +179,6 @@ if (workspaceTabsLimitInput) {
     if (e.key === 'Enter') {
       workspaceTabsLimitInput.blur();
     }
-  });
-}
-
-function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript', height = '180px') {
-  const editorValue = initialValue == null || initialValue === 'undefined' ? '' : String(initialValue);
-  textarea.value = editorValue;
-  const wrapper = document.createElement('div');
-  wrapper.className = 'cm-wrapper';
-  if (typeof CodeMirror === 'undefined') {
-    textarea.style.display = '';
-    wrapper.appendChild(textarea);
-    return { wrapper, editor: null };
-  }
-  const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
-  const editor = CodeMirror(wrapper, {
-    value: editorValue,
-    mode: mode,
-    theme: 'default',
-    lineNumbers: true,
-    lineWrapping: true,
-    autoCloseBrackets: true,
-    matchBrackets: true,
-    styleActiveLine: true,
-    tabSize: 2,
-    indentUnit: 2,
-    indentWithTabs: false,
-    foldGutter: true,
-    gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
-    extraKeys: {
-      'Ctrl-/': (cm) => {
-        cm.toggleComment({ line: '//', block: ['/*', '*/'], indent: false, padding: ' ', fullLines: true });
-        return false;
-      },
-      'Cmd-/': (cm) => {
-        cm.toggleComment({ line: '//', block: ['/*', '*/'], indent: false, padding: ' ', fullLines: true });
-        return false;
-      },
-      'Ctrl-F': (cm) => {
-        const field = cm.getWrapperElement()?.closest('.field');
-        const bodySearch = field?.querySelector('.body-search-input');
-        if (bodySearch) {
-          bodySearch.focus();
-          bodySearch.select();
-          return false;
-        }
-        return CodeMirror.Pass;
-      },
-      'Cmd-F': (cm) => {
-        const field = cm.getWrapperElement()?.closest('.field');
-        const bodySearch = field?.querySelector('.body-search-input');
-        if (bodySearch) {
-          bodySearch.focus();
-          bodySearch.select();
-          return false;
-        }
-        return CodeMirror.Pass;
-      },
-    },
-  });
-  editor.on('change', () => {
-    textarea.value = editor.getValue();
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  editor.setSize('100%', height);
-  textarea.style.display = 'none';
-  wrapper.appendChild(textarea);
-  wrapper.classList.add('theme-' + currentTheme);
-  return { wrapper, editor };
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function getSearchMatches(text, query, matchCase) {
-  if (!query) return [];
-  const flags = matchCase ? 'g' : 'gi';
-  const regex = new RegExp(escapeRegExp(query), flags);
-  const matches = [];
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    matches.push({ from: match.index, to: match.index + match[0].length });
-    if (match[0].length === 0) regex.lastIndex++;
-  }
-  return matches;
-}
-
-function createBodySearchPanel(editor, onChange) {
-  const state = {
-    marks: [],
-    matches: [],
-    currentIndex: -1,
-  };
-
-  const panel = document.createElement('div');
-  panel.className = 'body-search-panel';
-
-  const searchInput = document.createElement('input');
-  searchInput.type = 'search';
-  searchInput.placeholder = 'Найти в Body';
-  searchInput.className = 'body-search-input';
-
-  const counter = document.createElement('span');
-  counter.className = 'body-search-count';
-  counter.textContent = '0/0';
-
-  const prevBtn = document.createElement('button');
-  prevBtn.type = 'button';
-  prevBtn.className = 'secondary body-search-nav';
-  prevBtn.textContent = '↑';
-  prevBtn.title = 'Предыдущее совпадение';
-
-  const nextBtn = document.createElement('button');
-  nextBtn.type = 'button';
-  nextBtn.className = 'secondary body-search-nav';
-  nextBtn.textContent = '↓';
-  nextBtn.title = 'Следующее совпадение';
-
-  const matchMode = document.createElement('select');
-  matchMode.className = 'body-search-mode';
-  matchMode.title = 'Строгость совпадения';
-  matchMode.innerHTML = `
-    <option value="loose">Без учета регистра</option>
-    <option value="case">С учетом регистра</option>
-  `;
-
-  const replaceInput = document.createElement('input');
-  replaceInput.type = 'text';
-  replaceInput.placeholder = 'Заменить на';
-  replaceInput.className = 'body-search-input body-search-replace';
-
-  const replaceAllBtn = document.createElement('button');
-  replaceAllBtn.type = 'button';
-  replaceAllBtn.className = 'secondary body-search-replace-btn';
-  replaceAllBtn.textContent = 'Заменить все';
-
-  panel.append(searchInput, counter, prevBtn, nextBtn, matchMode, replaceInput, replaceAllBtn);
-
-  const clearMarks = () => {
-    state.marks.forEach((mark) => mark.clear());
-    state.marks = [];
-  };
-
-  const updateCounter = () => {
-    const total = state.matches.length;
-    counter.textContent = total ? `${state.currentIndex + 1}/${total}` : '0/0';
-    prevBtn.disabled = total === 0;
-    nextBtn.disabled = total === 0;
-    replaceAllBtn.disabled = total === 0;
-  };
-
-  const jumpToCurrent = () => {
-    if (!editor || state.currentIndex < 0 || !state.matches[state.currentIndex]) return;
-    const match = state.matches[state.currentIndex];
-    const from = editor.posFromIndex(match.from);
-    const to = editor.posFromIndex(match.to);
-    editor.setSelection(from, to);
-    editor.scrollIntoView({ from, to }, 80);
-    editor.focus();
-  };
-
-  const refresh = (keepIndex = false) => {
-    if (!editor) return;
-    clearMarks();
-    const query = searchInput.value;
-    const matchCase = matchMode.value === 'case';
-    state.matches = getSearchMatches(editor.getValue(), query, matchCase);
-    state.currentIndex = keepIndex && state.matches.length ? Math.min(state.currentIndex, state.matches.length - 1) : state.matches.length ? 0 : -1;
-
-    state.matches.forEach((match, index) => {
-      const markClass = index === state.currentIndex ? 'body-search-match current' : 'body-search-match';
-      state.marks.push(editor.markText(editor.posFromIndex(match.from), editor.posFromIndex(match.to), { className: markClass }));
-    });
-
-    updateCounter();
-  };
-
-  const go = (direction) => {
-    if (!state.matches.length) return;
-    state.currentIndex = (state.currentIndex + direction + state.matches.length) % state.matches.length;
-    refresh(true);
-    jumpToCurrent();
-  };
-
-  searchInput.addEventListener('input', () => {
-    refresh();
-  });
-  matchMode.addEventListener('change', () => {
-    refresh();
-  });
-  prevBtn.addEventListener('click', () => go(-1));
-  nextBtn.addEventListener('click', () => go(1));
-  replaceAllBtn.addEventListener('click', () => {
-    const query = searchInput.value;
-    if (!query) return;
-    const replacement = replaceInput.value;
-    const matchCase = matchMode.value === 'case';
-    const regex = new RegExp(escapeRegExp(query), matchCase ? 'g' : 'gi');
-    const before = editor.getValue();
-    const next = before.replace(regex, replacement);
-    const changed = getSearchMatches(before, query, matchCase).length;
-    if (!changed) return;
-    editor.setValue(next);
-    if (typeof onChange === 'function') onChange(next);
-    refresh();
-    toast(`Заменено: ${changed}`, 'success', 1800);
-  });
-  editor.on('change', () => refresh(true));
-
-  updateCounter();
-  return panel;
-}
-
-function destroyAllEditors() {
-  activeEditors.forEach(({ editor }) => {
-    if (editor && typeof editor.toTextArea === 'function') {
-      const wrapper = editor.getWrapperElement();
-      if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
-    }
-  });
-  activeEditors.clear();
-}
-
-function updateEditorsTheme() {
-  const currentTheme = localStorage.getItem('ab-runner-theme') || 'dark';
-  activeEditors.forEach(({ editor, wrapper }) => {
-    if (!editor) return;
-    editor.setOption('theme', 'default');
-    wrapper.classList.remove('theme-dark', 'theme-light', 'theme-red-white', 'theme-red-black');
-    wrapper.classList.add('theme-' + currentTheme);
-    editor.refresh();
   });
 }
 
@@ -502,78 +262,8 @@ function confirmDialog(title, msg) {
   });
 }
 
-const DEFAULT_SCRIPT_PRESETS = [
-  {
-    id: 'refresh-token-on-401',
-    title: 'Обновить token при 401',
-    description: 'Добавляет Bearer token перед запросом, при 401 получает новый token и повторяет запрос.',
-    prerequest: [
-      "const token = pm.env.get('token');",
-      '',
-      'if (token) {',
-      "  pm.request.headers.set('Authorization', 'Bearer ' + token);",
-      '}',
-    ].join('\n'),
-    postresponse: [
-      'const responseText = JSON.stringify(pm.response.data || {});',
-      'const isUnauthorized =',
-      '  pm.response.status === 401 ||',
-      "  pm.response.data?.errors?.some((error) => String(error.status) === '401') ||",
-      "  /expired|jwt|token|unauthorized/i.test(responseText);",
-      '',
-      'if (isUnauthorized) {',
-      "  const loginUrl = pm.env.get('loginUrl');",
-      "  const username = pm.env.get('username');",
-      "  const password = pm.env.get('password');",
-      '',
-      '  if (!loginUrl) {',
-      "    throw new Error('ENV loginUrl is required to refresh token');",
-      '  }',
-      '',
-      '  const loginResponse = await pm.sendRequest({',
-      "    method: 'POST',",
-      '    url: loginUrl,',
-      "    headers: { 'Content-Type': 'application/json' },",
-      '    body: { username, password },',
-      '  });',
-      '',
-      '  const nextToken =',
-      '    loginResponse.data?.token ||',
-      '    loginResponse.data?.access_token ||',
-      '    loginResponse.data?.data?.token ||',
-      '    loginResponse.data?.data?.access_token;',
-      '',
-      '  if (!nextToken) {',
-      "    throw new Error('Token was not found in login response');",
-      '  }',
-      '',
-      "  pm.env.set('token', nextToken);",
-      "  pm.request.headers.set('Authorization', 'Bearer ' + nextToken);",
-      '',
-      '  return await pm.retryRequest();',
-      '}',
-    ].join('\n'),
-  },
-];
-
-function cloneScriptPreset(preset) {
-  return {
-    id: preset.id || generatePresetId(),
-    title: preset.title || 'Новый пресет',
-    description: preset.description || '',
-    prerequest: preset.prerequest || '',
-    postresponse: preset.postresponse || '',
-  };
-}
-
-function generatePresetId() {
-  return `preset-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function normalizeScriptPresets() {
-  if (!Array.isArray(data.scriptPresets)) data.scriptPresets = [];
-  if (data.scriptPresets.length === 0) data.scriptPresets = DEFAULT_SCRIPT_PRESETS.map(cloneScriptPreset);
-  data.scriptPresets = data.scriptPresets.map(cloneScriptPreset);
+  normalizePresetList(data);
 }
 
 function showInputModal(title, def, placeholder = '') {
@@ -3491,7 +3181,7 @@ function createStepCard(step, idx) {
             step.body = nextValue;
             bta.value = nextValue;
             debouncedSave();
-          })
+          }, toast)
           : null;
 
         // ===== АВТОФОРМАТИРОВАНИЕ JSON ПРИ ПЕРВОМ ОТКРЫТИИ =====
@@ -4777,43 +4467,6 @@ tabBtns.forEach((b) => {
     historyTab.style.display = b.dataset.tab === 'history' ? 'block' : 'none';
     if (b.dataset.tab === 'history') loadHistory();
   });
-});
-
-if (runnerJsonInput) {
-  runnerJsonInput.addEventListener('input', updateRunnerJsonStatus);
-}
-
-if (openRunnerDataDrawerBtn) {
-  openRunnerDataDrawerBtn.addEventListener('click', () => setRunnerDataDrawerOpen(true));
-}
-
-if (closeRunnerDataDrawerBtn) {
-  closeRunnerDataDrawerBtn.addEventListener('click', () => setRunnerDataDrawerOpen(false));
-}
-
-if (applyRunnerJsonBtn) {
-  applyRunnerJsonBtn.addEventListener('click', () => setRunnerDataDrawerOpen(false));
-}
-
-if (clearRunnerJsonBtn) {
-  clearRunnerJsonBtn.addEventListener('click', () => {
-    if (!runnerJsonInput) return;
-    runnerJsonInput.value = '';
-    selectedFileName.textContent = dataFileInput?.files?.length ? selectedFileName.textContent : 'Файл не выбран';
-    updateRunnerJsonStatus();
-  });
-}
-
-if (runnerDataDrawer) {
-  runnerDataDrawer.addEventListener('click', (event) => {
-    if (event.target === runnerDataDrawer) setRunnerDataDrawerOpen(false);
-  });
-}
-
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && runnerDataDrawer?.classList.contains('active')) {
-    setRunnerDataDrawerOpen(false);
-  }
 });
 
 function readDataFile() {
