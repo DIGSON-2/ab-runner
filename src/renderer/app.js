@@ -4,14 +4,13 @@ import { formatJSON, parseJsonValue, repairJsonText } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
 
-let data = { folders: [], collections: [], environments: [], platforms: [] };
+let data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
 let activeCollectionId = null;
 let activeCollection = null;
 let openTabs = []; // Array of { id, name }
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
-let fullHistory = [];
 let sidebarWidth = 260;
 const OPEN_TABS_LIMIT_KEY = 'ab-runner-open-tabs-limit';
 const DEFAULT_OPEN_TABS_LIMIT = 10;
@@ -31,6 +30,13 @@ const collectionNameInput = document.getElementById('collectionNameInput');
 const stepsContainer = document.getElementById('stepsContainer');
 const dataFileInput = document.getElementById('dataFileInput');
 const runnerJsonInput = document.getElementById('runnerJsonInput');
+const runnerDataInputMount = document.getElementById('runnerDataInputMount');
+const openRunnerDataDrawerBtn = document.getElementById('openRunnerDataDrawerBtn');
+const runnerDataDrawer = document.getElementById('runnerDataDrawer');
+const closeRunnerDataDrawerBtn = document.getElementById('closeRunnerDataDrawerBtn');
+const applyRunnerJsonBtn = document.getElementById('applyRunnerJsonBtn');
+const clearRunnerJsonBtn = document.getElementById('clearRunnerJsonBtn');
+const runnerJsonStatus = document.getElementById('runnerJsonStatus');
 const selectedFileName = document.getElementById('selectedFileName');
 const delayInput = document.getElementById('delayInput');
 const progressEl = document.getElementById('progress');
@@ -67,6 +73,16 @@ const inputModalField = document.getElementById('inputModalField');
 const inputModalTitle = document.getElementById('inputModalTitle');
 const inputModalOkBtn = document.getElementById('inputModalOkBtn');
 const inputModalCancelBtn = document.getElementById('inputModalCancelBtn');
+const scriptPresetModal = document.getElementById('scriptPresetModal');
+const scriptPresetManagerSelect = document.getElementById('scriptPresetManagerSelect');
+const scriptPresetNameInput = document.getElementById('scriptPresetNameInput');
+const scriptPresetDescriptionInput = document.getElementById('scriptPresetDescriptionInput');
+const scriptPresetPreInput = document.getElementById('scriptPresetPreInput');
+const scriptPresetPostInput = document.getElementById('scriptPresetPostInput');
+const newScriptPresetBtn = document.getElementById('newScriptPresetBtn');
+const saveScriptPresetBtn = document.getElementById('saveScriptPresetBtn');
+const deleteScriptPresetBtn = document.getElementById('deleteScriptPresetBtn');
+const closeScriptPresetModalBtn = document.getElementById('closeScriptPresetModalBtn');
 const sidebar = document.getElementById('sidebar');
 const resizer = document.getElementById('resizer');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
@@ -138,6 +154,29 @@ const appDataBtn = document.getElementById('appDataBtn');
 const appDataMenu = document.getElementById('appDataMenu');
 const exportAppDataBtn = document.getElementById('exportAppDataBtn');
 const importAppDataBtn = document.getElementById('importAppDataBtn');
+
+// Runner data drawer
+if (runnerJsonInput && runnerDataInputMount) {
+  runnerDataInputMount.appendChild(runnerJsonInput);
+}
+
+function updateRunnerJsonStatus() {
+  if (!runnerJsonInput || !runnerJsonStatus) return;
+  const hasJson = runnerJsonInput.value.trim().length > 0;
+  runnerJsonStatus.dataset.ready = hasJson ? 'true' : 'false';
+  runnerJsonStatus.textContent = hasJson ? 'JSON вставлен' : 'JSON не вставлен';
+}
+
+function setRunnerDataDrawerOpen(isOpen) {
+  if (!runnerDataDrawer) return;
+  runnerDataDrawer.classList.toggle('active', isOpen);
+  runnerDataDrawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+  if (isOpen) {
+    setTimeout(() => runnerJsonInput?.focus(), 0);
+  }
+}
+
+updateRunnerJsonStatus();
 
 // ================== CodeMirror ==================
 const activeEditors = new Map();
@@ -462,6 +501,81 @@ function confirmDialog(title, msg) {
     requestAnimationFrame(() => d.classList.add('show'));
   });
 }
+
+const DEFAULT_SCRIPT_PRESETS = [
+  {
+    id: 'refresh-token-on-401',
+    title: 'Обновить token при 401',
+    description: 'Добавляет Bearer token перед запросом, при 401 получает новый token и повторяет запрос.',
+    prerequest: [
+      "const token = pm.env.get('token');",
+      '',
+      'if (token) {',
+      "  pm.request.headers.set('Authorization', 'Bearer ' + token);",
+      '}',
+    ].join('\n'),
+    postresponse: [
+      'const responseText = JSON.stringify(pm.response.data || {});',
+      'const isUnauthorized =',
+      '  pm.response.status === 401 ||',
+      "  pm.response.data?.errors?.some((error) => String(error.status) === '401') ||",
+      "  /expired|jwt|token|unauthorized/i.test(responseText);",
+      '',
+      'if (isUnauthorized) {',
+      "  const loginUrl = pm.env.get('loginUrl');",
+      "  const username = pm.env.get('username');",
+      "  const password = pm.env.get('password');",
+      '',
+      '  if (!loginUrl) {',
+      "    throw new Error('ENV loginUrl is required to refresh token');",
+      '  }',
+      '',
+      '  const loginResponse = await pm.sendRequest({',
+      "    method: 'POST',",
+      '    url: loginUrl,',
+      "    headers: { 'Content-Type': 'application/json' },",
+      '    body: { username, password },',
+      '  });',
+      '',
+      '  const nextToken =',
+      '    loginResponse.data?.token ||',
+      '    loginResponse.data?.access_token ||',
+      '    loginResponse.data?.data?.token ||',
+      '    loginResponse.data?.data?.access_token;',
+      '',
+      '  if (!nextToken) {',
+      "    throw new Error('Token was not found in login response');",
+      '  }',
+      '',
+      "  pm.env.set('token', nextToken);",
+      "  pm.request.headers.set('Authorization', 'Bearer ' + nextToken);",
+      '',
+      '  return await pm.retryRequest();',
+      '}',
+    ].join('\n'),
+  },
+];
+
+function cloneScriptPreset(preset) {
+  return {
+    id: preset.id || generatePresetId(),
+    title: preset.title || 'Новый пресет',
+    description: preset.description || '',
+    prerequest: preset.prerequest || '',
+    postresponse: preset.postresponse || '',
+  };
+}
+
+function generatePresetId() {
+  return `preset-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeScriptPresets() {
+  if (!Array.isArray(data.scriptPresets)) data.scriptPresets = [];
+  if (data.scriptPresets.length === 0) data.scriptPresets = DEFAULT_SCRIPT_PRESETS.map(cloneScriptPreset);
+  data.scriptPresets = data.scriptPresets.map(cloneScriptPreset);
+}
+
 function showInputModal(title, def, placeholder = '') {
   return new Promise((res) => {
     inputModalTitle.textContent = title;
@@ -493,6 +607,104 @@ function showInputModal(title, def, placeholder = '') {
     inputModalCancelBtn.addEventListener('click', onCancel);
     inputModalField.addEventListener('keydown', onKey);
   });
+}
+
+function getScriptPresetById(id) {
+  normalizeScriptPresets();
+  return data.scriptPresets.find((preset) => preset.id === id) || data.scriptPresets[0] || null;
+}
+
+function fillScriptPresetManager(presetId) {
+  if (!scriptPresetManagerSelect) return;
+  normalizeScriptPresets();
+  const selectedId = presetId || scriptPresetManagerSelect.value || data.scriptPresets[0]?.id || '';
+  scriptPresetManagerSelect.innerHTML = '';
+  data.scriptPresets.forEach((preset) => {
+    const option = document.createElement('option');
+    option.value = preset.id;
+    option.textContent = preset.title;
+    scriptPresetManagerSelect.appendChild(option);
+  });
+  scriptPresetManagerSelect.value = selectedId;
+  const preset = getScriptPresetById(scriptPresetManagerSelect.value);
+  if (!preset) return;
+  scriptPresetNameInput.value = preset.title;
+  scriptPresetDescriptionInput.value = preset.description || '';
+  scriptPresetPreInput.value = preset.prerequest || '';
+  scriptPresetPostInput.value = preset.postresponse || '';
+}
+
+function openScriptPresetManager(presetId) {
+  fillScriptPresetManager(presetId);
+  scriptPresetModal?.classList.add('active');
+  scriptPresetNameInput?.focus();
+}
+
+function refreshScriptPresetControls() {
+  if (activeCollection) renderCollectionEditor();
+}
+
+if (scriptPresetManagerSelect) {
+  scriptPresetManagerSelect.addEventListener('change', () => fillScriptPresetManager(scriptPresetManagerSelect.value));
+}
+
+if (newScriptPresetBtn) {
+  newScriptPresetBtn.addEventListener('click', () => {
+    normalizeScriptPresets();
+    const preset = {
+      id: generatePresetId(),
+      title: 'Новый пресет',
+      description: '',
+      prerequest: '',
+      postresponse: '',
+    };
+    data.scriptPresets.push(preset);
+    fillScriptPresetManager(preset.id);
+    scriptPresetNameInput?.focus();
+  });
+}
+
+if (saveScriptPresetBtn) {
+  saveScriptPresetBtn.addEventListener('click', async () => {
+    normalizeScriptPresets();
+    const preset = getScriptPresetById(scriptPresetManagerSelect?.value);
+    if (!preset) return;
+    const title = scriptPresetNameInput.value.trim();
+    if (!title) {
+      toast('Название пресета не может быть пустым', 'warning');
+      return;
+    }
+    preset.title = title;
+    preset.description = scriptPresetDescriptionInput.value.trim();
+    preset.prerequest = scriptPresetPreInput.value;
+    preset.postresponse = scriptPresetPostInput.value;
+    await saveData();
+    fillScriptPresetManager(preset.id);
+    refreshScriptPresetControls();
+    toast('Пресет сохранен', 'success');
+  });
+}
+
+if (deleteScriptPresetBtn) {
+  deleteScriptPresetBtn.addEventListener('click', async () => {
+    normalizeScriptPresets();
+    const preset = getScriptPresetById(scriptPresetManagerSelect?.value);
+    if (!preset) return;
+    if (data.scriptPresets.length <= 1) {
+      toast('Нельзя удалить последний пресет', 'warning');
+      return;
+    }
+    if (!(await confirmDialog('Удалить пресет', `Удалить "${preset.title}"?`))) return;
+    data.scriptPresets = data.scriptPresets.filter((item) => item.id !== preset.id);
+    await saveData();
+    fillScriptPresetManager(data.scriptPresets[0]?.id);
+    refreshScriptPresetControls();
+    toast('Пресет удален', 'success');
+  });
+}
+
+if (closeScriptPresetModalBtn) {
+  closeScriptPresetModalBtn.addEventListener('click', () => scriptPresetModal?.classList.remove('active'));
 }
 
 function truncateName(name, maxLength = 32) {
@@ -585,7 +797,7 @@ function initUpdateUi() {
               ? 'Автообновления работают только в установленной версии'
               : result?.error || 'Не удалось проверить обновления';
           setUpdateStatus(message, 'error');
-          toast(message, 'warning', 4000);
+          toast(message, result?.rateLimited ? 'warning' : 'error', result?.rateLimited ? 6500 : 4000);
         }
       } catch (e) {
         setUpdateStatus('Ошибка проверки обновлений', 'error');
@@ -2790,6 +3002,29 @@ function createStepCard(step, idx) {
   const scriptsContainer = document.createElement('div');
   scriptsContainer.className = 'scripts-tabs-container';
 
+  const scriptPresetsBar = document.createElement('div');
+  scriptPresetsBar.className = 'script-presets-bar';
+  const scriptPresetsInfo = document.createElement('div');
+  scriptPresetsInfo.className = 'script-presets-info';
+  scriptPresetsInfo.innerHTML = '<strong>Пресеты</strong><span>Быстро добавляют готовую логику в scripts</span>';
+  const scriptPresetActions = document.createElement('div');
+  scriptPresetActions.className = 'script-preset-actions';
+  const scriptPresetSelect = document.createElement('select');
+  scriptPresetSelect.className = 'script-preset-select';
+  normalizeScriptPresets();
+  data.scriptPresets.forEach((preset) => {
+    const option = document.createElement('option');
+    option.value = preset.id;
+    option.textContent = preset.title;
+    scriptPresetSelect.appendChild(option);
+  });
+  const applyScriptPresetBtn = txt('button', 'Применить', 'secondary script-preset-btn');
+  applyScriptPresetBtn.type = 'button';
+  const manageScriptPresetsBtn = txt('button', 'Управление', 'secondary script-preset-btn');
+  manageScriptPresetsBtn.type = 'button';
+  scriptPresetActions.append(scriptPresetSelect, applyScriptPresetBtn, manageScriptPresetsBtn);
+  scriptPresetsBar.append(scriptPresetsInfo, scriptPresetActions);
+
   const scriptsTabs = document.createElement('div');
   scriptsTabs.className = 'sub-tabs';
   const preBtn = txt('button', 'Pre-request', 'sub-tab-btn active');
@@ -2842,6 +3077,32 @@ function createStepCard(step, idx) {
   const preEditorInfo = createScriptEditor(preContent, 'prerequest');
   const postEditorInfo = createScriptEditor(postContent, 'postresponse');
 
+  const setScriptEditorValue = (type, editorInfo, code) => {
+    step.scripts[type].code = code;
+    if (editorInfo.editor) editorInfo.editor.setValue(code);
+  };
+
+  applyScriptPresetBtn.onclick = async () => {
+    const preset = getScriptPresetById(scriptPresetSelect.value);
+    if (!preset) return;
+    const hasExistingCode = Boolean(step.scripts.prerequest.code.trim() || step.scripts.postresponse.code.trim());
+    if (
+      hasExistingCode &&
+      !(await confirmDialog(
+        'Заменить scripts?',
+        'Пресет заменит текущий Pre-request и Post-response код в этом запросе.',
+      ))
+    )
+      return;
+
+    setScriptEditorValue('prerequest', preEditorInfo, preset.prerequest);
+    setScriptEditorValue('postresponse', postEditorInfo, preset.postresponse);
+    debouncedSave();
+    toast(`Пресет "${preset.title}" применен`, 'success', 3500);
+  };
+
+  manageScriptPresetsBtn.onclick = () => openScriptPresetManager(scriptPresetSelect.value);
+
   preBtn.onclick = () => {
     preBtn.classList.add('active');
     postBtn.classList.remove('active');
@@ -2867,7 +3128,7 @@ function createStepCard(step, idx) {
     }
   };
 
-  scriptsContainer.append(scriptsTabs, preContent, postContent);
+  scriptsContainer.append(scriptPresetsBar, scriptsTabs, preContent, postContent);
   tbc.scripts.appendChild(scriptsContainer);
 
   // ================== Documentation Tab ==================
@@ -3908,64 +4169,83 @@ sendSingleBtn.addEventListener('click', async () => {
 });
 
 // ================== History ==================
-async function loadHistory() {
-  fullHistory = await window.api.getHistory();
-  updateHistoryFilter();
-  renderFilteredHistory();
+const HISTORY_PAGE_SIZE = 80;
+const historyPageState = { page: 1, pageSize: HISTORY_PAGE_SIZE, total: 0, hasMore: false, loading: false };
+const globalHistoryPageState = { page: 1, pageSize: HISTORY_PAGE_SIZE, total: 0, hasMore: false, loading: false };
+
+function getHistoryFilterValue(filterEl) {
+  return filterEl?.value || '';
 }
-function updateHistoryFilter() {
-  historyFilter.innerHTML = '<option value="">Все коллекции</option>';
-  [...new Set(fullHistory.map((h) => h.collection).filter(Boolean))].forEach((n) => {
-    const o = document.createElement('option');
-    o.value = n;
-    o.textContent = n;
-    historyFilter.appendChild(o);
+
+function updateHistoryFilterOptions(filterEl, collections, selectedValue) {
+  if (!filterEl) return;
+  filterEl.innerHTML = '<option value="">Все коллекции</option>';
+  (collections || []).forEach((name) => {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    filterEl.appendChild(option);
   });
+  filterEl.value = selectedValue || '';
 }
-// Замените renderFilteredHistory на эту версию
-function renderFilteredHistory() {
-  const v = historyFilter.value;
-  const filtered = v ? fullHistory.filter((h) => h.collection === v) : fullHistory;
 
+function renderHistoryLoadMore(container, state, onLoadMore) {
+  if (!container || !state.hasMore) return;
+  const row = document.createElement('tr');
+  row.className = 'history-load-more-row';
+  const cell = document.createElement('td');
+  cell.colSpan = 7;
+  const button = document.createElement('button');
+  button.className = 'secondary history-load-more-btn';
+  button.textContent = `Показать ещё (${Math.min(state.pageSize, state.total - state.page * state.pageSize)} из ${state.total})`;
+  button.disabled = state.loading;
+  button.addEventListener('click', onLoadMore);
+  cell.appendChild(button);
+  row.appendChild(cell);
+  container.appendChild(row);
+}
+
+function appendHistoryRows(container, entries) {
+  const fragment = document.createDocumentFragment();
+  entries.forEach((entry) => renderHistoryRow(entry, fragment));
+  container.appendChild(fragment);
+}
+
+async function loadHistory() {
+  if (!historyTableBody || historyPageState.loading) return;
+  historyPageState.loading = true;
+  historyPageState.page = 1;
+  historyTableBody.innerHTML = '<tr><td colspan="7">Загрузка истории...</td></tr>';
+  const selectedCollection = getHistoryFilterValue(historyFilter);
+  const result = await window.api.getHistory({
+    page: historyPageState.page,
+    pageSize: historyPageState.pageSize,
+    filters: { collection: selectedCollection },
+  });
+  updateHistoryFilterOptions(historyFilter, result.collections, selectedCollection);
   historyTableBody.innerHTML = '';
+  appendHistoryRows(historyTableBody, result.entries);
+  historyPageState.total = result.total;
+  historyPageState.hasMore = result.hasMore;
+  historyPageState.loading = false;
+  renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
+}
 
-  // Если записей мало (<50) — рендерим все
-  if (filtered.length < 50) {
-    filtered.forEach((e) => renderHistoryRow(e, historyTableBody));
-    return;
-  }
-
-  // Виртуальный скролл: рендерим только первые 50 + добавляем по скроллу
-  const INITIAL_RENDER = 50;
-  const BATCH_SIZE = 25;
-  let renderedCount = 0;
-
-  const renderBatch = () => {
-    const fragment = document.createDocumentFragment();
-    const end = Math.min(renderedCount + BATCH_SIZE, filtered.length);
-    for (let i = renderedCount; i < end; i++) {
-      renderHistoryRow(filtered[i], fragment);
-    }
-    historyTableBody.appendChild(fragment);
-    renderedCount = end;
-  };
-
-  // Первый батч
-  for (let i = 0; i < INITIAL_RENDER && i < filtered.length; i++) {
-    renderHistoryRow(filtered[i], historyTableBody);
-  }
-  renderedCount = INITIAL_RENDER;
-
-  // Lazy loading при скролле
-  const scrollContainer = historyTableBody.closest('.history-table-container') || historyTableBody.parentElement;
-  const onScroll = () => {
-    if (renderedCount >= filtered.length) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    if (scrollTop + clientHeight >= scrollHeight - 100) {
-      renderBatch();
-    }
-  };
-  scrollContainer.addEventListener('scroll', onScroll);
+async function loadMoreHistory() {
+  if (!historyTableBody || historyPageState.loading || !historyPageState.hasMore) return;
+  historyPageState.loading = true;
+  historyPageState.page += 1;
+  historyTableBody.querySelector('.history-load-more-row')?.remove();
+  const result = await window.api.getHistory({
+    page: historyPageState.page,
+    pageSize: historyPageState.pageSize,
+    filters: { collection: getHistoryFilterValue(historyFilter) },
+  });
+  appendHistoryRows(historyTableBody, result.entries);
+  historyPageState.total = result.total;
+  historyPageState.hasMore = result.hasMore;
+  historyPageState.loading = false;
+  renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
 }
 
 function createHistoryRow(e) {
@@ -4012,7 +4292,7 @@ function showHistoryDetail(e) {
   detailModal.classList.add('active');
 }
 refreshHistoryBtn.addEventListener('click', loadHistory);
-historyFilter.addEventListener('change', renderFilteredHistory);
+historyFilter.addEventListener('change', loadHistory);
 
 // ================== Details ==================
 function showResponseDetails(row) {
@@ -4120,77 +4400,53 @@ if (globalHistoryBtn)
     await loadGlobalHistory();
   });
 async function loadGlobalHistory() {
-  fullHistory = await window.api.getHistory();
-  updateGlobalHistoryFilter();
-  renderGlobalHistoryTable();
-}
-function updateGlobalHistoryFilter() {
-  globalHistoryFilter.innerHTML = '<option value="">Все коллекции</option>';
-  [...new Set(fullHistory.map((h) => h.collection).filter(Boolean))].forEach((n) => {
-    const o = document.createElement('option');
-    o.value = n;
-    o.textContent = n;
-    globalHistoryFilter.appendChild(o);
-  });
-}
-function renderGlobalHistoryTable() {
+  if (!globalHistoryTableBody || globalHistoryPageState.loading) return;
   const token = ++globalHistoryRenderToken;
-  globalHistoryTableBody.innerHTML = '';
-  const selectedCollection = globalHistoryFilter.value;
-  const rows = selectedCollection ? fullHistory.filter((h) => h.collection === selectedCollection) : fullHistory;
-  const batchSize = 60;
-  let index = 0;
-
-  const renderBatch = () => {
-    if (token !== globalHistoryRenderToken) return;
-    const fragment = document.createDocumentFragment();
-    const end = Math.min(index + batchSize, rows.length);
-    for (; index < end; index++) {
-      fragment.appendChild(createHistoryRow(rows[index]));
-    }
-    globalHistoryTableBody.appendChild(fragment);
-    if (index < rows.length) requestAnimationFrame(renderBatch);
-  };
-
-  requestAnimationFrame(renderBatch);
-  return;
-
-  globalHistoryTableBody.innerHTML = '';
-  const v = globalHistoryFilter.value;
-  (v ? fullHistory.filter((h) => h.collection === v) : fullHistory).forEach((e) => {
-    const row = document.createElement('tr');
-    row.className = e.success ? 'success' : 'error';
-    row.append(
-      txt('td', new Date(e.timestamp).toLocaleString()),
-      txt('td', e.collection || '—'),
-      txt('td', e.type === 'single' ? 'Send' : 'Runner'),
-      txt('td', e.item),
-      txt('td', e.stepName),
-    );
-    const tu = txt('td', e.url);
-    tu.style.cssText = 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    row.appendChild(tu);
-    const ts = document.createElement('td');
-    ts.appendChild(
-      txt(
-        'span',
-        e.success ? `✓ ${e.status}` : `✗ ${e.status}`,
-        `status-badge ${e.success ? 'status-success' : 'status-error'}`,
-      ),
-    );
-    row.appendChild(ts);
-    row.addEventListener('dblclick', () => showHistoryDetail(e));
-    globalHistoryTableBody.appendChild(row);
+  globalHistoryPageState.loading = true;
+  globalHistoryPageState.page = 1;
+  globalHistoryTableBody.innerHTML = '<tr><td colspan="7">Загрузка истории...</td></tr>';
+  const selectedCollection = getHistoryFilterValue(globalHistoryFilter);
+  const result = await window.api.getHistory({
+    page: globalHistoryPageState.page,
+    pageSize: globalHistoryPageState.pageSize,
+    filters: { collection: selectedCollection },
   });
+  if (token !== globalHistoryRenderToken) {
+    globalHistoryPageState.loading = false;
+    return;
+  }
+  updateHistoryFilterOptions(globalHistoryFilter, result.collections, selectedCollection);
+  globalHistoryTableBody.innerHTML = '';
+  appendHistoryRows(globalHistoryTableBody, result.entries);
+  globalHistoryPageState.total = result.total;
+  globalHistoryPageState.hasMore = result.hasMore;
+  globalHistoryPageState.loading = false;
+  renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
 }
-globalHistoryFilter.addEventListener('change', renderGlobalHistoryTable);
+
+async function loadMoreGlobalHistory() {
+  if (!globalHistoryTableBody || globalHistoryPageState.loading || !globalHistoryPageState.hasMore) return;
+  globalHistoryPageState.loading = true;
+  globalHistoryPageState.page += 1;
+  globalHistoryTableBody.querySelector('.history-load-more-row')?.remove();
+  const result = await window.api.getHistory({
+    page: globalHistoryPageState.page,
+    pageSize: globalHistoryPageState.pageSize,
+    filters: { collection: getHistoryFilterValue(globalHistoryFilter) },
+  });
+  appendHistoryRows(globalHistoryTableBody, result.entries);
+  globalHistoryPageState.total = result.total;
+  globalHistoryPageState.hasMore = result.hasMore;
+  globalHistoryPageState.loading = false;
+  renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
+}
+globalHistoryFilter.addEventListener('change', loadGlobalHistory);
 if (refreshGlobalHistoryBtn) refreshGlobalHistoryBtn.addEventListener('click', loadGlobalHistory);
 
 // ================== Clear History ==================
 clearHistoryBtn.addEventListener('click', async () => {
   if (await confirmDialog('Очистить всю историю', 'Удалить ВСЕ записи?')) {
     await window.api.clearHistory();
-    fullHistory = [];
     historyTableBody.innerHTML = '';
     if (globalHistoryTableBody) globalHistoryTableBody.innerHTML = '';
     toast('История очищена', 'success');
@@ -4200,7 +4456,6 @@ if (clearGlobalHistoryBtn)
   clearGlobalHistoryBtn.addEventListener('click', async () => {
     if (await confirmDialog('Очистить всю историю', 'Удалить ВСЕ записи?')) {
       await window.api.clearHistory();
-      fullHistory = [];
       historyTableBody.innerHTML = '';
       if (globalHistoryTableBody) globalHistoryTableBody.innerHTML = '';
       toast('История очищена', 'success');
@@ -4219,33 +4474,19 @@ if (clearGlobalHistoryFilterBtn)
 [clearHistoryTimeFilter, clearHistoryTypeFilter, clearHistoryMethodFilter, clearHistoryStatusFilter].forEach((f) => {
   if (f) f.addEventListener('change', updateClearHistoryPreview);
 });
-function updateClearHistoryPreview() {
-  const tf = clearHistoryTimeFilter.value,
-    tyf = clearHistoryTypeFilter.value,
-    mf = clearHistoryMethodFilter.value,
-    sf = clearHistoryStatusFilter.value;
-  let cnt = 0,
-    now = Date.now();
-  fullHistory.forEach((e) => {
-    if (tf !== 'all') {
-      const age = (now - new Date(e.timestamp).getTime()) / 3600000;
-      const days = age / 24;
-      if (
-        (tf === '1h' && age > 1) ||
-        (tf === '24h' && age > 24) ||
-        (tf === '7d' && days > 7) ||
-        (tf === '30d' && days > 30) ||
-        (tf === '90d' && days > 90)
-      )
-        return;
-    }
-    if (tyf !== 'all' && e.type !== tyf) return;
-    if (mf !== 'all' && e.method !== mf) return;
-    if (sf === 'success' && !e.success) return;
-    if (sf === 'error' && e.success) return;
-    cnt++;
+async function updateClearHistoryPreview() {
+  clearHistoryPreview.textContent = '...';
+  const result = await window.api.getHistory({
+    page: 1,
+    pageSize: 0,
+    filters: {
+      time: clearHistoryTimeFilter.value,
+      type: clearHistoryTypeFilter.value,
+      method: clearHistoryMethodFilter.value,
+      status: clearHistoryStatusFilter.value,
+    },
   });
-  clearHistoryPreview.textContent = cnt;
+  clearHistoryPreview.textContent = result.total;
 }
 if (applyClearHistoryBtn)
   applyClearHistoryBtn.addEventListener('click', async () => {
@@ -4258,6 +4499,7 @@ if (applyClearHistoryBtn)
     if (await confirmDialog('Подтвердите удаление', `Удалить ${clearHistoryPreview.textContent} записей?`)) {
       await window.api.clearHistoryFiltered(f);
       await loadHistory();
+      if (globalHistoryModal?.classList.contains('active')) await loadGlobalHistory();
       clearHistoryModal.classList.remove('active');
       toast('История очищена', 'success');
     }
@@ -4405,6 +4647,7 @@ if (sendJsonToRunnerBtn) {
     runnerJsonInput.value = window.generatedJson;
     selectedFileName.textContent = 'JSON из генератора';
     if (dataFileInput) dataFileInput.value = '';
+    updateRunnerJsonStatus();
     jsonModal.classList.remove('active');
     toast('JSON перенесён в раннер', 'success');
   });
@@ -4535,6 +4778,44 @@ tabBtns.forEach((b) => {
     if (b.dataset.tab === 'history') loadHistory();
   });
 });
+
+if (runnerJsonInput) {
+  runnerJsonInput.addEventListener('input', updateRunnerJsonStatus);
+}
+
+if (openRunnerDataDrawerBtn) {
+  openRunnerDataDrawerBtn.addEventListener('click', () => setRunnerDataDrawerOpen(true));
+}
+
+if (closeRunnerDataDrawerBtn) {
+  closeRunnerDataDrawerBtn.addEventListener('click', () => setRunnerDataDrawerOpen(false));
+}
+
+if (applyRunnerJsonBtn) {
+  applyRunnerJsonBtn.addEventListener('click', () => setRunnerDataDrawerOpen(false));
+}
+
+if (clearRunnerJsonBtn) {
+  clearRunnerJsonBtn.addEventListener('click', () => {
+    if (!runnerJsonInput) return;
+    runnerJsonInput.value = '';
+    selectedFileName.textContent = dataFileInput?.files?.length ? selectedFileName.textContent : 'Файл не выбран';
+    updateRunnerJsonStatus();
+  });
+}
+
+if (runnerDataDrawer) {
+  runnerDataDrawer.addEventListener('click', (event) => {
+    if (event.target === runnerDataDrawer) setRunnerDataDrawerOpen(false);
+  });
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && runnerDataDrawer?.classList.contains('active')) {
+    setRunnerDataDrawerOpen(false);
+  }
+});
+
 function readDataFile() {
   return new Promise((res, rej) => {
     const pastedJson = runnerJsonInput?.value.trim();
@@ -4570,6 +4851,10 @@ function readDataFile() {
 }
 dataFileInput.addEventListener('change', () => {
   selectedFileName.textContent = dataFileInput.files.length ? dataFileInput.files[0].name : 'Файл не выбран';
+  if (dataFileInput.files.length && runnerJsonInput) {
+    runnerJsonInput.value = '';
+    updateRunnerJsonStatus();
+  }
 });
 
 // Themes
@@ -4605,6 +4890,7 @@ async function loadData() {
     if (!data.collections) data.collections = [];
     if (!data.environments) data.environments = [];
     ensurePlatformsShape();
+    normalizeScriptPresets();
     data.folders.forEach((f) => {
       if (f.parentId === undefined) f.parentId = null;
       if (f.collapsed === undefined) f.collapsed = false;
@@ -4628,13 +4914,13 @@ async function loadData() {
     renderTabs();
     updateEnvironmentSelector();
     updatePlatformSelector();
-    updateHistoryFilter();
     renderRightPanel();
     if (activeCollection) renderCollectionEditor();
     else showEmptyState();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
-    data = { folders: [], collections: [], environments: [], platforms: [] };
+    data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
+    normalizeScriptPresets();
     toast('Ошибка загрузки данных', 'error');
   }
 }
@@ -4649,6 +4935,7 @@ async function saveData() {
     data.environments = [];
   }
   ensurePlatformsShape();
+  normalizeScriptPresets();
   await window.api.saveData(data);
 }
 

@@ -185,6 +185,10 @@
                                     </label>
                                     <span id="selectedFileName" class="file-name">Файл не выбран</span>
                                 </div>
+                                <div class="runner-data-summary">
+                                    <button id="openRunnerDataDrawerBtn" class="runner-data-open-btn" type="button">Данные раннера</button>
+                                    <span id="runnerJsonStatus" class="runner-json-status" data-ready="false">JSON не вставлен</span>
+                                </div>
                                 <textarea id="runnerJsonInput" class="runner-json-input" placeholder="Или вставьте JSON-массив прямо сюда"></textarea>
                             </div>
 
@@ -343,6 +347,58 @@
             <div class="modal-actions">
                 <button id="inputModalCancelBtn" class="secondary">Отмена</button>
                 <button id="inputModalOkBtn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scriptPresetModal" class="modal">
+        <div class="modal-content script-preset-modal">
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">Пресеты Scripts</h3>
+                <button id="closeScriptPresetModalBtn" class="modal-close-icon" title="Закрыть">✕</button>
+            </div>
+            <div class="script-preset-manager">
+                <div class="script-preset-picker">
+                    <select id="scriptPresetManagerSelect"></select>
+                    <button id="newScriptPresetBtn" class="secondary" type="button">Новый</button>
+                    <button id="deleteScriptPresetBtn" class="danger" type="button">Удалить</button>
+                </div>
+                <div class="field">
+                    <label>Название</label>
+                    <input id="scriptPresetNameInput" type="text" placeholder="Например: Обновить token при 401">
+                </div>
+                <div class="field">
+                    <label>Описание</label>
+                    <input id="scriptPresetDescriptionInput" type="text" placeholder="Коротко что делает пресет">
+                </div>
+                <div class="field">
+                    <label>Pre-request</label>
+                    <textarea id="scriptPresetPreInput" class="script-preset-code"></textarea>
+                </div>
+                <div class="field">
+                    <label>Post-response</label>
+                    <textarea id="scriptPresetPostInput" class="script-preset-code"></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="saveScriptPresetBtn" type="button">Сохранить пресет</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="runnerDataDrawer" class="runner-data-drawer" aria-hidden="true">
+        <div class="runner-data-panel" role="dialog" aria-modal="true" aria-labelledby="runnerDataTitle">
+            <div class="runner-data-header">
+                <div>
+                    <h3 id="runnerDataTitle">Данные раннера</h3>
+                    <p>Вставьте JSON-массив для запуска без отдельного файла.</p>
+                </div>
+                <button id="closeRunnerDataDrawerBtn" class="modal-close-icon" title="Закрыть">×</button>
+            </div>
+            <div id="runnerDataInputMount" class="runner-data-input-mount"></div>
+            <div class="runner-data-actions">
+                <button id="clearRunnerJsonBtn" class="secondary" type="button">Очистить</button>
+                <button id="applyRunnerJsonBtn" type="button">Готово</button>
             </div>
         </div>
     </div>

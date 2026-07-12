@@ -112,6 +112,9 @@ function createMainWindow() {
 }
 
 // ================== Auto Updater ==================
+const UPDATE_CHECK_COOLDOWN_MS = 10 * 60 * 1000;
+let lastUpdateCheckAt = 0;
+
 function sendUpdaterEvent(channel, payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -120,10 +123,40 @@ function sendUpdaterEvent(channel, payload = {}) {
 
 function formatUpdaterError(err) {
   const message = err?.message || String(err);
+  if (message.includes('429') || message.includes('Too Many Requests') || message.includes('secondary rate limit')) {
+    return 'GitHub временно ограничил проверки обновлений (429 Too Many Requests). Подождите 10-60 минут и попробуйте снова. Это не ошибка приложения.';
+  }
   if (message.includes('ERR_HTTP2_PROTOCOL_ERROR')) {
     return 'Ошибка соединения с GitHub release assets (HTTP/2). В этой версии включен обход через HTTP/1.1. Если ошибка осталась, скачайте установщик вручную с GitHub Releases.';
   }
   return message;
+}
+
+function getUpdateCooldownMs() {
+  if (!lastUpdateCheckAt) return 0;
+  return Math.max(0, UPDATE_CHECK_COOLDOWN_MS - (Date.now() - lastUpdateCheckAt));
+}
+
+async function checkForUpdatesSafely() {
+  const cooldownMs = getUpdateCooldownMs();
+  if (cooldownMs > 0) {
+    const waitMinutes = Math.ceil(cooldownMs / 60000);
+    return {
+      success: false,
+      rateLimited: true,
+      retryAfterMs: cooldownMs,
+      error: `Проверка обновлений недавно уже запускалась. Попробуйте через ${waitMinutes} мин.`,
+    };
+  }
+
+  lastUpdateCheckAt = Date.now();
+  try {
+    const result = await autoUpdater.checkForUpdatesAndNotify();
+    return { success: true, updateInfo: result?.updateInfo || null };
+  } catch (e) {
+    console.error('Update check error:', e);
+    return { success: false, error: formatUpdaterError(e) };
+  }
 }
 
 function initAutoUpdater() {
@@ -176,10 +209,7 @@ function initAutoUpdater() {
     sendUpdaterEvent('update-status', { status: 'downloaded' });
   });
 
-  autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-    console.error('Update check error:', err);
-    sendUpdaterEvent('update-error', { message: formatUpdaterError(err) });
-  });
+  sendUpdaterEvent('update-status', { status: 'idle', message: 'Обновления: не проверялись' });
 }
 
 ipcMain.handle('check-for-updates', async () => {
@@ -187,13 +217,7 @@ ipcMain.handle('check-for-updates', async () => {
     return { success: false, error: 'Auto updates work only in packaged builds' };
   }
 
-  try {
-    const result = await autoUpdater.checkForUpdatesAndNotify();
-    return { success: true, updateInfo: result?.updateInfo || null };
-  } catch (e) {
-    console.error('Manual update check error:', e);
-    return { success: false, error: formatUpdaterError(e) };
-  }
+  return await checkForUpdatesSafely();
 });
 
 ipcMain.handle('get-app-version', () => app.getVersion());
@@ -331,6 +355,51 @@ function addToHistory(entry) {
   }
 }
 
+function getHistoryCollections() {
+  return [...new Set(history.map(entry => entry.collection).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function matchesHistoryFilters(entry, filters = {}) {
+  if (filters.collection && entry.collection !== filters.collection) return false;
+  if (filters.type && filters.type !== 'all' && entry.type !== filters.type) return false;
+  if (filters.method && filters.method !== 'all' && entry.method !== filters.method) return false;
+  if (filters.status === 'success' && !entry.success) return false;
+  if (filters.status === 'error' && entry.success) return false;
+
+  if (filters.time && filters.time !== 'all') {
+    const timestamp = new Date(entry.timestamp).getTime();
+    if (!Number.isFinite(timestamp)) return false;
+    const ageHours = (Date.now() - timestamp) / 3600000;
+    const ageDays = ageHours / 24;
+    if (filters.time === '1h' && ageHours > 1) return false;
+    if (filters.time === '24h' && ageHours > 24) return false;
+    if (filters.time === '7d' && ageDays > 7) return false;
+    if (filters.time === '30d' && ageDays > 30) return false;
+    if (filters.time === '90d' && ageDays > 90) return false;
+  }
+
+  return true;
+}
+
+function getHistoryPage(query = {}) {
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const requestedPageSize = Number.parseInt(query.pageSize, 10);
+  const pageSize = Math.max(0, Math.min(200, Number.isFinite(requestedPageSize) ? requestedPageSize : 50));
+  const filters = query.filters || {};
+  const filtered = history.filter(entry => matchesHistoryFilters(entry, filters));
+  const start = (page - 1) * pageSize;
+  const entries = pageSize === 0 ? [] : filtered.slice(start, start + pageSize);
+
+  return {
+    entries,
+    total: filtered.length,
+    page,
+    pageSize,
+    hasMore: pageSize > 0 && start + entries.length < filtered.length,
+    collections: getHistoryCollections(),
+  };
+}
+
 // ================== Recent Collections ==================
 function updateRecentCollection(collectionId, reason = 'viewed') {
   if (!collectionId) return;
@@ -380,7 +449,7 @@ ipcMain.handle('get-recent-collections', async () => {
 // ================== Data (Async Write) ==================
 function migrateOldData() {
   if (fs.existsSync(dataPath)) return;
-  const data = { folders: [], collections: [], environments: [], platforms: [] };
+  const data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
   if (fs.existsSync(oldCollectionsPath)) {
     try {
       const old = JSON.parse(fs.readFileSync(oldCollectionsPath, 'utf8'));
@@ -398,6 +467,7 @@ function readData() {
     if (!d.collections) d.collections = [];
     if (!d.environments) d.environments = [];
     if (!d.platforms) d.platforms = [];
+    if (!d.scriptPresets) d.scriptPresets = [];
     if (!d.activePlatformId) d.activePlatformId = '';
     if (!d.recentCollections) d.recentCollections = [];
     cleanExpiredRecentCollections(d);
@@ -416,7 +486,7 @@ function readData() {
     });
 
     return d;
-  } catch { return { folders: [], collections: [], environments: [], platforms: [], activePlatformId: '', recentCollections: [] }; }
+  } catch { return { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [], activePlatformId: '', recentCollections: [] }; }
 }
 
 let lastWrittenJson = '';
@@ -473,6 +543,7 @@ function normalizeImportedAppData(input) {
     collections: Array.isArray(importedData.collections) ? importedData.collections : [],
     environments: Array.isArray(importedData.environments) ? importedData.environments : [],
     platforms: Array.isArray(importedData.platforms) ? importedData.platforms : [],
+    scriptPresets: Array.isArray(importedData.scriptPresets) ? importedData.scriptPresets : [],
     activeEnvironmentId: importedData.activeEnvironmentId || '',
     activePlatformId: importedData.activePlatformId || '',
     recentCollections: Array.isArray(importedData.recentCollections) ? importedData.recentCollections : [],
@@ -944,7 +1015,10 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 });
 
 // ================== History IPC ==================
-ipcMain.handle('get-history', async () => history);
+ipcMain.handle('get-history', async (event, query) => {
+  if (!query) return history;
+  return getHistoryPage(query);
+});
 ipcMain.handle('clear-history', async () => { history = []; saveHistorySync(); return { success: true }; });
 
 // ================== Save File Dialog ==================

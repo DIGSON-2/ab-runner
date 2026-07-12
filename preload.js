@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('api', {
     onStop: (callback) => ipcRenderer.on('collection-stopped', () => callback()),
     sendSingleRequest: (step, testData, collectionName, environment, collectionSteps) =>
         ipcRenderer.invoke('send-single-request', { step, testData, collectionName, environment, collectionSteps }),
-    getHistory: () => ipcRenderer.invoke('get-history'),
+    getHistory: (query) => ipcRenderer.invoke('get-history', query),
     clearHistory: () => ipcRenderer.invoke('clear-history'),
     clearHistoryFiltered: (filters) => ipcRenderer.invoke('clear-history-filtered', filters),
     saveFile: (content, defaultName) => ipcRenderer.invoke('save-file-dialog', content, defaultName),
