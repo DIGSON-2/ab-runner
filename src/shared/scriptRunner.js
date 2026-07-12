@@ -51,6 +51,12 @@ return (async () => {
           }
           throw new Error('sendRequest callback not available');
         },
+        retryRequest: async () => {
+          if (context.callbacks && context.callbacks.retryRequest) {
+            return await context.callbacks.retryRequest();
+          }
+          throw new Error('retryRequest callback not available');
+        },
       }, context.request || {}, context.response || {});
 
       // Build the execution function with safe globals

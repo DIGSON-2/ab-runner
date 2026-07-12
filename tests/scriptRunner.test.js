@@ -43,4 +43,30 @@ describe('executeScript pm API', () => {
     expect(result.success).toBe(true);
     expect(result.env.token).toBe('from-login');
   });
+
+  test('exposes retryRequest callback to post-response scripts', async () => {
+    const request = { method: 'GET', url: 'https://example.com/protected', headers: {}, body: null };
+    const result = await executeScript(
+      `
+      pm.env.set('token', 'fresh-token');
+      pm.request.headers.set('Authorization', 'Bearer ' + pm.env.get('token'));
+      return await pm.retryRequest();
+      `,
+      {
+        env: {},
+        request,
+        response: { status: 401, data: { errors: [{ status: '401' }] } },
+        callbacks: {
+          retryRequest: async () => ({
+            status: 200,
+            data: { ok: true },
+          }),
+        },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.result.status).toBe(200);
+    expect(request.headers.Authorization).toBe('Bearer fresh-token');
+  });
 });

@@ -199,6 +199,13 @@ function createPmApi(stepEnv = {}, callbacks = {}, requestState = {}, response =
       return await callbacks.sendRequest(options);
     },
 
+    async retryRequest() {
+      if (!callbacks.retryRequest) {
+        throw new Error('retryRequest is not available in this context');
+      }
+      return await callbacks.retryRequest();
+    },
+
     // Logging (safe console output)
     log(...args) {
       if (callbacks.log) {

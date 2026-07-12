@@ -30,6 +30,7 @@ const collectionEditorEl = document.getElementById('collectionEditor');
 const collectionNameInput = document.getElementById('collectionNameInput');
 const stepsContainer = document.getElementById('stepsContainer');
 const dataFileInput = document.getElementById('dataFileInput');
+const runnerJsonInput = document.getElementById('runnerJsonInput');
 const selectedFileName = document.getElementById('selectedFileName');
 const delayInput = document.getElementById('delayInput');
 const progressEl = document.getElementById('progress');
@@ -116,6 +117,7 @@ const fieldsContainer = document.getElementById('fieldsContainer');
 const addFieldBtn = document.getElementById('addFieldBtn');
 const generateJsonBtn = document.getElementById('generateJsonBtn');
 const saveJsonBtn = document.getElementById('saveJsonBtn');
+const sendJsonToRunnerBtn = document.getElementById('sendJsonToRunnerBtn');
 const closeModalBtn = document.getElementById('closeModalBtn');
 const jsonPreview = document.getElementById('jsonPreview');
 const jsonPreviewContent = document.getElementById('jsonPreviewContent');
@@ -520,7 +522,7 @@ function applyRuntimeEnvironmentValues(values = {}) {
   if (!env || !values || typeof values !== 'object') return;
   ensureEnvironmentShape(env);
   Object.entries(values).forEach(([key, value]) => {
-    if (!key || key === 'platform') return;
+    if (!key) return;
     const existing = env.variables.find((item) => item.key === key);
     if (existing) {
       existing.value = value == null ? '' : String(value);
@@ -815,6 +817,8 @@ function ensureEnvironmentShape(env) {
     if (v.enabled === undefined) v.enabled = true;
     if (v.key === undefined) v.key = '';
     if (v.value === undefined) v.value = '';
+    if (!Array.isArray(v.options)) v.options = [];
+    v.options = v.options.map((option) => String(option || '').trim()).filter(Boolean);
   });
   if (!Array.isArray(env.platforms)) env.platforms = [];
   env.platforms = env.platforms
@@ -828,6 +832,20 @@ function ensureEnvironmentShape(env) {
     })
     .filter((platform) => platform.value);
   if (env.activePlatformId && !env.platforms.some((platform) => platform.id === env.activePlatformId)) {
+    env.activePlatformId = '';
+  }
+  if (env.platforms.length > 0) {
+    const activePlatform = env.platforms.find((platform) => platform.id === env.activePlatformId) || env.platforms[0];
+    const values = [...new Set(env.platforms.map((platform) => platform.value).filter(Boolean))];
+    let platformVar = env.variables.find((variable) => variable.key === 'platform');
+    if (!platformVar) {
+      platformVar = { key: 'platform', value: activePlatform?.value || values[0] || '', enabled: true, options: [] };
+      env.variables.push(platformVar);
+    }
+    platformVar.enabled = platformVar.enabled !== false;
+    platformVar.options = [...new Set([...(platformVar.options || []), ...values])];
+    if (!platformVar.value && activePlatform?.value) platformVar.value = activePlatform.value;
+    env.platforms = [];
     env.activePlatformId = '';
   }
   return env;
@@ -893,8 +911,8 @@ function getEnvironmentStats(env) {
   ensureEnvironmentShape(env);
   const total = env.variables.length;
   const enabled = env.variables.filter((v) => v.enabled !== false && v.key).length;
-  const platforms = env.platforms.length;
-  return { total, enabled, platforms };
+  const selectable = env.variables.filter((v) => Array.isArray(v.options) && v.options.length > 0).length;
+  return { total, enabled, selectable };
 }
 
 function isSecretEnvKey(key) {
@@ -923,6 +941,7 @@ function makeEnvActionButton(text, title, onClick, className = 'secondary') {
 function updateEnvironmentSelector() {
   if (!data.environments) data.environments = [];
   data.environments.forEach(ensureEnvironmentShape);
+  const selectedId = data.activeEnvironmentId || '';
   environmentSelect.innerHTML = '<option value="">No Environment</option>';
   data.environments.forEach((env) => {
     const stats = getEnvironmentStats(env);
@@ -931,8 +950,16 @@ function updateEnvironmentSelector() {
     o.textContent = `${env.name} (${stats.enabled}/${stats.total})`;
     environmentSelect.appendChild(o);
   });
-  if (data.activeEnvironmentId && data.environments.some((e) => e.id === data.activeEnvironmentId))
-    environmentSelect.value = data.activeEnvironmentId;
+  environmentSelect.value = data.environments.some((e) => e.id === selectedId) ? selectedId : '';
+}
+
+function refreshActiveEnvironmentStats() {
+  const env = getActiveEnvironmentRecord();
+  if (!env) return;
+  const stats = getEnvironmentStats(env);
+  const summary = envVarsContainer?.querySelector('.env-panel-title span');
+  if (summary) summary.textContent = `${stats.enabled} активных из ${stats.total} · ${stats.selectable} списков`;
+  updateEnvironmentSelector();
 }
 
 function updatePlatformSelector() {
@@ -1048,7 +1075,7 @@ function renderRightPanel() {
   const title = document.createElement('div');
   title.className = 'env-panel-title';
   title.append(txt('strong', env.name));
-  title.append(txt('span', `${stats.enabled} активных из ${stats.total} · ${stats.platforms} platforms`));
+  title.append(txt('span', `${stats.enabled} активных из ${stats.total} · ${stats.selectable} списков`));
   const actions = document.createElement('div');
   actions.className = 'env-panel-actions';
   actions.append(
@@ -1091,22 +1118,34 @@ function renderRightPanel() {
       debounce(() => {
         env.variables[idx].key = kIn.value.trim();
         saveData();
-        updateEnvironmentSelector();
+        refreshActiveEnvironmentStats();
       }, 300),
     );
-    const vIn = document.createElement('input');
+    let vIn;
+    const options = Array.isArray(v.options) ? v.options : [];
+    if (options.length) {
+      vIn = document.createElement('select');
+      const values = [...new Set([v.value, ...options].filter(Boolean))];
+      values.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        vIn.appendChild(option);
+      });
+    } else {
+      vIn = document.createElement('input');
+      vIn.type = isSecretEnvKey(v.key) ? 'password' : 'text';
+    }
     vIn.className = 'env-var-value';
     vIn.placeholder = 'Значение';
-    vIn.type = isSecretEnvKey(v.key) ? 'password' : 'text';
     vIn.value = v.value || '';
-    vIn.addEventListener(
-      'input',
-      debounce(() => {
-        env.variables[idx].value = vIn.value;
-        saveData();
-      }, 300),
-    );
-    const copy = makeEnvActionButton('{{}}', `Скопировать {{${v.key || 'key'}}}`, () => {
+    const saveValue = debounce(() => {
+      env.variables[idx].value = vIn.value;
+      saveData();
+      if (options.length) refreshActiveEnvironmentStats();
+    }, 300);
+    vIn.addEventListener(options.length ? 'change' : 'input', saveValue);
+    const copy = makeEnvActionButton('Copy', `Скопировать {{${v.key || 'key'}}}`, () => {
       if (!env.variables[idx].key) {
         toast('Сначала заполните ключ', 'warning');
         return;
@@ -1114,15 +1153,35 @@ function renderRightPanel() {
       copyToClipboard(`{{${env.variables[idx].key}}}`, 'Плейсхолдер скопирован');
     });
     copy.className = 'env-var-copy';
-    const reveal = makeEnvActionButton('👁', 'Показать/скрыть значение', () => {
+    const list = makeEnvActionButton('Options', 'Allowed values', async () => {
+      const current = (env.variables[idx].options || []).join(', ');
+      const raw = await showInputModal('Allowed values', current, 'ekb, msk, spb');
+      if (raw === null) return;
+      const nextOptions = raw
+        .split(/[,\n]/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      env.variables[idx].options = [...new Set(nextOptions)];
+      if (env.variables[idx].options.length && !env.variables[idx].options.includes(env.variables[idx].value)) {
+        env.variables[idx].value = env.variables[idx].options[0];
+      }
+      saveData();
+      renderRightPanel();
+      refreshActiveEnvironmentStats();
+    });
+    list.className = 'env-var-copy';
+    const reveal = makeEnvActionButton('Show', 'Показать/скрыть значение', () => {
+      if (vIn.tagName === 'SELECT') return;
       vIn.type = vIn.type === 'password' ? 'text' : 'password';
     });
     reveal.className = 'env-var-copy';
     const rm = document.createElement('button');
     rm.className = 'env-var-remove';
-    rm.textContent = '✕';
+    rm.textContent = 'Del';
     rm.title = 'Удалить переменную';
-    rm.onclick = () => {
+    rm.onclick = async () => {
+      const key = env.variables[idx].key || 'без названия';
+      if (!(await confirmDialog('Удалить переменную', `Удалить переменную "${key}" из окружения "${env.name}"?`))) return;
       env.variables.splice(idx, 1);
       saveData();
       renderRightPanel();
@@ -1131,7 +1190,8 @@ function renderRightPanel() {
     const rowActions = document.createElement('div');
     rowActions.className = 'env-var-actions';
     rowActions.appendChild(copy);
-    if (isSecretEnvKey(v.key)) rowActions.appendChild(reveal);
+    rowActions.appendChild(list);
+    if (isSecretEnvKey(v.key) && vIn.tagName !== 'SELECT') rowActions.appendChild(reveal);
     rowActions.appendChild(rm);
     row.append(enabled, kIn, vIn, rowActions);
     envVarsContainer.appendChild(row);
@@ -1217,7 +1277,7 @@ function renderEnvList() {
     const ttl = document.createElement('div');
     ttl.className = 'env-manager-title';
     ttl.append(txt('strong', env.name));
-    ttl.append(txt('span', `${stats.enabled}/${stats.total} переменных · ${stats.platforms} platforms`));
+    ttl.append(txt('span', `${stats.enabled}/${stats.total} переменных · ${stats.selectable} списков`));
     const acts = document.createElement('div');
     const selectBtn = makeEnvActionButton('Открыть', 'Выбрать и открыть переменные', () => {
       data.activeEnvironmentId = env.id;
@@ -3908,7 +3968,7 @@ function renderFilteredHistory() {
   scrollContainer.addEventListener('scroll', onScroll);
 }
 
-function renderHistoryRow(e, container) {
+function createHistoryRow(e) {
   const row = document.createElement('tr');
   row.className = e.success ? 'success' : 'error';
   row.append(
@@ -3931,7 +3991,11 @@ function renderHistoryRow(e, container) {
   );
   row.appendChild(ts);
   row.addEventListener('dblclick', () => showHistoryDetail(e));
-  container.appendChild(row);
+  return row;
+}
+
+function renderHistoryRow(e, container) {
+  container.appendChild(createHistoryRow(e));
 }
 function showHistoryDetail(e) {
   const rd = { status: e.status, statusText: '', headers: e.responseHeaders || {}, data: e.responseData, url: e.url };
@@ -4044,10 +4108,16 @@ function buildDetailContent({ responseData, error, item, stepName, url, requestB
 }
 
 // ================== Global History ==================
+let globalHistoryRenderToken = 0;
+
 if (globalHistoryBtn)
   globalHistoryBtn.addEventListener('click', async () => {
-    await loadGlobalHistory();
     globalHistoryModal.classList.add('active');
+    if (globalHistoryTableBody) {
+      globalHistoryRenderToken++;
+      globalHistoryTableBody.innerHTML = '<tr><td colspan="7">Загрузка истории...</td></tr>';
+    }
+    await loadGlobalHistory();
   });
 async function loadGlobalHistory() {
   fullHistory = await window.api.getHistory();
@@ -4064,6 +4134,27 @@ function updateGlobalHistoryFilter() {
   });
 }
 function renderGlobalHistoryTable() {
+  const token = ++globalHistoryRenderToken;
+  globalHistoryTableBody.innerHTML = '';
+  const selectedCollection = globalHistoryFilter.value;
+  const rows = selectedCollection ? fullHistory.filter((h) => h.collection === selectedCollection) : fullHistory;
+  const batchSize = 60;
+  let index = 0;
+
+  const renderBatch = () => {
+    if (token !== globalHistoryRenderToken) return;
+    const fragment = document.createDocumentFragment();
+    const end = Math.min(index + batchSize, rows.length);
+    for (; index < end; index++) {
+      fragment.appendChild(createHistoryRow(rows[index]));
+    }
+    globalHistoryTableBody.appendChild(fragment);
+    if (index < rows.length) requestAnimationFrame(renderBatch);
+  };
+
+  requestAnimationFrame(renderBatch);
+  return;
+
   globalHistoryTableBody.innerHTML = '';
   const v = globalHistoryFilter.value;
   (v ? fullHistory.filter((h) => h.collection === v) : fullHistory).forEach((e) => {
@@ -4290,6 +4381,7 @@ if (generateJsonBtn) {
     jsonPreviewContent.textContent = jsonString;
 
     copyJsonBtn.style.display = 'inline-block';
+    if (sendJsonToRunnerBtn) sendJsonToRunnerBtn.style.display = 'inline-block';
     saveJsonBtn.style.display = 'inline-block';
 
     window.generatedJson = jsonString;
@@ -4304,6 +4396,17 @@ if (copyJsonBtn) {
       navigator.clipboard.writeText(window.generatedJson);
       toast('JSON скопирован в буфер обмена', 'success');
     }
+  });
+}
+
+if (sendJsonToRunnerBtn) {
+  sendJsonToRunnerBtn.addEventListener('click', () => {
+    if (!window.generatedJson || !runnerJsonInput) return;
+    runnerJsonInput.value = window.generatedJson;
+    selectedFileName.textContent = 'JSON из генератора';
+    if (dataFileInput) dataFileInput.value = '';
+    jsonModal.classList.remove('active');
+    toast('JSON перенесён в раннер', 'success');
   });
 }
 
@@ -4434,6 +4537,18 @@ tabBtns.forEach((b) => {
 });
 function readDataFile() {
   return new Promise((res, rej) => {
+    const pastedJson = runnerJsonInput?.value.trim();
+    if (pastedJson) {
+      try {
+        const items = cachedJsonParse(pastedJson);
+        if (!Array.isArray(items)) rej(new Error('Ожидается JSON-массив'));
+        else res(items);
+      } catch (err) {
+        rej(new Error('Ошибка JSON в поле раннера: ' + err.message));
+      }
+      return;
+    }
+
     const f = dataFileInput.files[0];
     if (!f) {
       rej(new Error('Файл не выбран'));

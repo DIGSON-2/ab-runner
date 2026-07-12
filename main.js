@@ -55,8 +55,8 @@ function createSplashWindow() {
             background: #1a1a2e; border-radius: 20px; overflow: hidden;
             -webkit-app-region: drag;
         }
-        .icon-container { width: 200px; height: 200px; display: flex; align-items: center; justify-content: center; animation: pulse 2s ease-in-out infinite; }
-        .icon-container img { width: 180px; height: 180px; object-fit: contain; filter: drop-shadow(0 0 30px rgba(108, 99, 255, 0.6)); }
+        .icon-container { width: 250px; height: 250px; display: flex; align-items: center; justify-content: center; animation: pulse 2s ease-in-out infinite; }
+        .icon-container img { width: 230px; height: 230px; object-fit: contain; filter: drop-shadow(0 0 34px rgba(108, 99, 255, 0.7)); }
         .app-name { margin-top: 24px; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 28px; font-weight: 700; color: #e0e0e0; letter-spacing: 2px; text-transform: uppercase; }
         .loading-bar { margin-top: 20px; width: 160px; height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden; }
         .loading-bar-fill { width: 40%; height: 100%; background: linear-gradient(90deg, #6c63ff, #ff4d6d); border-radius: 2px; animation: loading 1.5s ease-in-out infinite; }
@@ -322,6 +322,7 @@ function scheduleHistorySave() {
 
 function addToHistory(entry) {
   history.unshift(entry);
+  if (history.length > 500) history.length = 500;
 
   // Batch: save only every N entries or after timeout
   if (!historyWritePending || history.length % HISTORY_BATCH_SIZE === 0) {
@@ -615,10 +616,14 @@ async function runStepForScript(stepId, data, steps, env, signal) {
   return await sendScriptRequest(state, data || {}, env, signal);
 }
 
-function createScriptCallbacks(steps, item, env, signal) {
+function createScriptCallbacks(steps, item, env, signal, requestState) {
   return {
     runStep: async (stepId, data) => runStepForScript(stepId, data || item || {}, steps, env, signal),
     sendRequest: async (options) => sendScriptRequest(options, item || {}, env, signal),
+    retryRequest: async () => {
+      if (!requestState) throw new Error('retryRequest is available only while processing a request');
+      return await sendScriptRequest(requestState, item || {}, env, signal);
+    },
   };
 }
 
@@ -716,12 +721,14 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           requestHeaders = requestState.headers;
           requestMethod = requestState.method;
 
-          const response = await axios({
+          let response = await axios({
             method: requestState.method,
             url: requestState.url,
             headers: requestState.headers,
             data: requestState.body,
-            signal: abortController.signal, timeout: 30000,
+            signal: abortController.signal,
+            timeout: 30000,
+            validateStatus: () => true,
           });
 
           counter++;
@@ -740,23 +747,34 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                   data: item,
                   response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data },
                   request: requestState,
-                  callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal),
+                  callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal, requestState),
                 },
                 step.scripts.postresponse.timeout || 5000
               );
 
               if (!scriptResult.success) {
                 console.error('Post-response script error:', scriptResult.error);
+              } else if (scriptResult.result && typeof scriptResult.result.status !== 'undefined') {
+                response = {
+                  status: scriptResult.result.status,
+                  statusText: scriptResult.result.statusText || '',
+                  headers: scriptResult.result.headers || {},
+                  data: scriptResult.result.data,
+                };
+                currentUrl = requestState.url;
+                requestBody = serializeRequestBody(requestState.body);
+                requestHeaders = requestState.headers;
               }
             } catch (scriptErr) {
               console.error('Post-response script execution error:', scriptErr);
             }
           }
 
-          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
+          const requestSuccess = response.status >= 200 && response.status < 400;
+          addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestState.method, status: response.status, success: requestSuccess, error: requestSuccess ? null : response.statusText, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
           const avgTime = getAvgTime(requestTimes);
-          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: response.status, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
+          sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: requestSuccess, status: response.status, error: requestSuccess ? null : response.statusText, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl } });
         } catch (e) {
           if (e.name === 'CanceledError' || e.message === 'canceled') break;
           counter++;
@@ -873,7 +891,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
     currentUrl = requestState.url;
     requestBody = serializeRequestBody(requestState.body);
     requestHeaders = requestState.headers;
-    const response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 30000 });
+    let response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 30000, validateStatus: () => true });
 
     const postresponseCode = getScriptCode(step, 'postresponse');
     if (postresponseCode) {
@@ -886,22 +904,34 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
             data: item,
             request: requestState,
             response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data },
-            callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined),
+            callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined, requestState),
           },
           step.scripts.postresponse.timeout || 5000
         );
 
         if (!scriptResult.success) console.error('Post-response script error:', scriptResult.error);
+        else if (scriptResult.result && typeof scriptResult.result.status !== 'undefined') {
+          response = {
+            status: scriptResult.result.status,
+            statusText: scriptResult.result.statusText || '',
+            headers: scriptResult.result.headers || {},
+            data: scriptResult.result.data,
+          };
+          currentUrl = requestState.url;
+          requestBody = serializeRequestBody(requestState.body);
+          requestHeaders = requestState.headers;
+        }
       } catch (scriptErr) {
         console.error('Post-response script execution error:', scriptErr);
       }
     }
 
-    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: response.status, success: true, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
+    const requestSuccess = response.status >= 200 && response.status < 400;
+    addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: response.status, success: requestSuccess, error: requestSuccess ? null : response.statusText, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
     if (collectionName) updateRecentCollection(collectionName, 'executed');
 
-    return { success: true, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
+    return { success: requestSuccess, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
   } catch (e) {
     const err = e.response ? { success: false, status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: e.config?.url || '', requestBody: e.config?.data || null, requestHeaders: e.config?.headers || {}, environment: env } : { success: false, status: 0, statusText: e.message, headers: {}, data: null, url: '', requestBody: null, requestHeaders: {}, environment: env };
 
