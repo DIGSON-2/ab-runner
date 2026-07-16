@@ -1481,7 +1481,10 @@ if (exportAppDataBtn) {
     closeSidebarFunctionMenus();
     try {
       await saveData();
-      const res = await window.api.exportAppBackup();
+      const res = await window.api.exportAppBackup({
+        theme: localStorage.getItem('ab-runner-theme') || 'dark',
+        openTabsLimit,
+      });
       if (res?.success) {
         toast('Backup сохранён', 'success');
       } else if (!res?.cancelled) {
@@ -1509,6 +1512,8 @@ if (importAppDataBtn) {
         return;
       }
 
+      if (res.settings?.theme) localStorage.setItem('ab-runner-theme', res.settings.theme);
+      if (res.settings?.openTabsLimit) setOpenTabsLimit(res.settings.openTabsLimit);
       activeCollectionId = null;
       activeCollection = null;
       openTabs = [];
@@ -1519,7 +1524,7 @@ if (importAppDataBtn) {
       await loadData();
       const c = res.counts || {};
       toast(
-        `Backup восстановлен: ${c.collections || 0} коллекций, ${c.environments || 0} окружений, ${c.platforms || 0} платформ`,
+        `Backup восстановлен: ${c.collections || 0} коллекций, ${c.environments || 0} окружений, ${c.scriptPresets || 0} пресетов`,
         'success',
       );
     } catch (e) {
@@ -3616,8 +3621,9 @@ function _renderRunnerTable(res) {
 function extractVariables(step) {
   const dataVars = new Set();
   const envVars = new Set();
-  const envRegex = /\{\{([^{}]+)\}\}/g;
-  const dataRegex = /(?<!\{)\{([^{}]+)\}(?!\})/g;
+  const placeholderPath = '[A-Za-z0-9_$-]+(?:\\.[A-Za-z0-9_$-]+)*';
+  const envRegex = new RegExp(`\\{\\{\\s*(${placeholderPath})\\s*\\}\\}`, 'g');
+  const dataRegex = new RegExp(`(?<!\\{)\\{(${placeholderPath})\\}(?!\\})`, 'g');
   const scanString = (str) => {
     if (!str || typeof str !== 'string') return;
     let m;

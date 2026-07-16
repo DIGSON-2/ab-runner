@@ -42,4 +42,9 @@ describe('replacePlaceholders', () => {
     expect(replacePlaceholders('{obj}', item)).toBe('{obj}');
     expect(replacePlaceholders('{obj}', item, {}, { toJson: true })).toBe('{"x":1}');
   });
+
+  test('does not treat JSON objects as placeholders', () => {
+    const body = '{"attributes":{"carrierCode":"CDEK","consigneeCode":"CDEK","consigneeName":"CDEK"}}';
+    expect(replacePlaceholders(body, { id: 1 })).toBe(body);
+  });
 });

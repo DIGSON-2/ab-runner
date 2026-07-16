@@ -469,6 +469,8 @@ function readData() {
     if (!d.platforms) d.platforms = [];
     if (!d.scriptPresets) d.scriptPresets = [];
     if (!d.activePlatformId) d.activePlatformId = '';
+    if (!d.activeCollectionId) d.activeCollectionId = '';
+    if (!d.openTabs) d.openTabs = [];
     if (!d.recentCollections) d.recentCollections = [];
     cleanExpiredRecentCollections(d);
 
@@ -486,7 +488,7 @@ function readData() {
     });
 
     return d;
-  } catch { return { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [], activePlatformId: '', recentCollections: [] }; }
+  } catch { return { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [], activePlatformId: '', activeCollectionId: '', openTabs: [], recentCollections: [] }; }
 }
 
 let lastWrittenJson = '';
@@ -546,11 +548,13 @@ function normalizeImportedAppData(input) {
     scriptPresets: Array.isArray(importedData.scriptPresets) ? importedData.scriptPresets : [],
     activeEnvironmentId: importedData.activeEnvironmentId || '',
     activePlatformId: importedData.activePlatformId || '',
+    activeCollectionId: importedData.activeCollectionId || '',
+    openTabs: Array.isArray(importedData.openTabs) ? importedData.openTabs : [],
     recentCollections: Array.isArray(importedData.recentCollections) ? importedData.recentCollections : [],
   };
 }
 
-ipcMain.handle('export-app-backup', async () => {
+ipcMain.handle('export-app-backup', async (event, settings = {}) => {
   try {
     const stamp = new Date().toISOString().slice(0, 10);
     const backup = {
@@ -559,6 +563,10 @@ ipcMain.handle('export-app-backup', async () => {
       exportedAt: new Date().toISOString(),
       data: readData(),
       history,
+      settings: {
+        theme: settings.theme || 'dark',
+        openTabsLimit: Number.isFinite(Number(settings.openTabsLimit)) ? Number(settings.openTabsLimit) : 10,
+      },
     };
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Save AB Runner backup',
@@ -586,6 +594,7 @@ ipcMain.handle('import-app-backup', async () => {
     const parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
     const nextData = normalizeImportedAppData(parsed);
     const nextHistory = Array.isArray(parsed.history) ? parsed.history : [];
+    const nextSettings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
 
     await writeData(nextData);
     history = nextHistory;
@@ -599,8 +608,11 @@ ipcMain.handle('import-app-backup', async () => {
         collections: nextData.collections.length,
         environments: nextData.environments.length,
         platforms: nextData.environments.reduce((sum, env) => sum + (Array.isArray(env.platforms) ? env.platforms.length : 0), 0),
+        scriptPresets: nextData.scriptPresets.length,
+        openTabs: nextData.openTabs.length,
         history: nextHistory.length,
       },
+      settings: nextSettings,
     };
   } catch (e) {
     console.error('Backup import error:', e);

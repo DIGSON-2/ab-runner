@@ -6,7 +6,10 @@ function replacePlaceholders(template, item, environment = {}, options = {}) {
   const cleaned = cleanString(template);
   const { toJson = false } = options;
   const env = environment && typeof environment === 'object' ? environment : {};
+  const placeholderPathRegex = /^[A-Za-z0-9_$-]+(?:\.[A-Za-z0-9_$-]+)*$/;
   const resolveValue = (match, pathStr) => {
+    if (!placeholderPathRegex.test(pathStr)) return match;
+
     if (item === null || typeof item !== 'object') {
       if (pathStr === 'id') return String(item ?? '');
       if (pathStr in env) {
