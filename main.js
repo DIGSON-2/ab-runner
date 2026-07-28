@@ -23,6 +23,8 @@ const historyPath = path.join(app.getPath('userData'), 'ab-runner-history.json')
 const oldCollectionsPath = path.join(app.getPath('userData'), 'ab-runner-collections.json');
 
 let history = [];
+let lastWrittenJson = '';
+let writePromise = null;
 
 // ================== Splash Screen ==================
 function createSplashWindow() {
@@ -280,6 +282,7 @@ function buildRequestBody(step, item, env) {
       return { data: params, headers: {} };
     }
     case 'raw': {
+      if (step.rawType === 'json') validateUnquotedJsonPlaceholders(step.body || '', item, env);
       let body = replacePlaceholders(step.body || '', item, env, { toJson: true });
       let data;
       if (step.rawType === 'json') {
@@ -462,7 +465,9 @@ function migrateOldData() {
 
 function readData() {
   try {
-    const d = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    const raw = fs.readFileSync(dataPath, 'utf8');
+    const d = JSON.parse(raw);
+    if (raw && raw.length > 100) lastWrittenJson = raw;
     if (!d.folders) d.folders = [];
     if (!d.collections) d.collections = [];
     if (!d.environments) d.environments = [];
@@ -491,9 +496,6 @@ function readData() {
   } catch { return { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [], activePlatformId: '', activeCollectionId: '', openTabs: [], recentCollections: [] }; }
 }
 
-let lastWrittenJson = '';
-let writePromise = null;
-
 async function writeData(data) {
   const json = JSON.stringify(data, null, 2);
 
@@ -517,10 +519,27 @@ async function writeData(data) {
       // Backup перед записью
       if (fs.existsSync(dataPath)) {
         const backupPath = dataPath + '.backup';
-        await fs.promises.copyFile(dataPath, backupPath);
+        try {
+          await retryBusy(() => fs.promises.copyFile(dataPath, backupPath));
+        } catch (backupError) {
+          console.warn('Не удалось обновить backup перед сохранением:', backupError.message);
+        }
       }
       // Асинхронная запись
-      await fs.promises.writeFile(dataPath, json, 'utf8');
+      const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
+      await retryBusy(() => fs.promises.writeFile(tmpPath, json, 'utf8'));
+      await retryBusy(async () => {
+        try {
+          await fs.promises.rename(tmpPath, dataPath);
+        } catch (renameError) {
+          if (['EEXIST', 'EPERM', 'EACCES'].includes(renameError.code)) {
+            await fs.promises.rm(dataPath, { force: true });
+            await fs.promises.rename(tmpPath, dataPath);
+            return;
+          }
+          throw renameError;
+        }
+      });
       lastWrittenJson = json;
     } catch (e) {
       console.error('Ошибка записи данных:', e);
@@ -531,6 +550,24 @@ async function writeData(data) {
   })();
 
   await writePromise;
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryBusy(operation, attempts = 4) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes(error.code) || attempt === attempts - 1) throw error;
+      await sleep(80 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 ipcMain.handle('get-data', async () => readData());
@@ -639,6 +676,35 @@ function serializeRequestBody(data) {
   return typeof data === 'string' ? data : (data == null ? null : JSON.stringify(data));
 }
 
+function validateUnquotedJsonPlaceholders(template, item, env) {
+  const placeholderPath = '[A-Za-z0-9_$-]+(?:\\.[A-Za-z0-9_$-]+)*';
+  const placeholderRegex = new RegExp(`\\{\\{\\s*(${placeholderPath})\\s*\\}\\}|(?<!\\{)\\{(${placeholderPath})\\}(?!\\})`, 'g');
+  let match;
+
+  while ((match = placeholderRegex.exec(template)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (template[start - 1] === '"' && template[end] === '"') continue;
+
+    const name = (match[1] || match[2] || '').trim();
+    const resolved = replacePlaceholders(match[0], item, env, { toJson: true });
+
+    if (resolved === match[0]) {
+      throw new Error(`Переменная "${name}" не найдена, но используется как JSON-значение без кавычек`);
+    }
+
+    if (!String(resolved).trim()) {
+      throw new Error(`Переменная "${name}" пустая. Если это массив, укажите в ENV значение вроде [] или ["A","B"]`);
+    }
+
+    try {
+      JSON.parse(resolved);
+    } catch {
+      throw new Error(`Переменная "${name}" должна быть валидным JSON, потому что используется без кавычек. Например: [], ["A","B"], {"id":1}`);
+    }
+  }
+}
+
 function buildStepRequestState(step, item, env) {
   const url = replacePlaceholders(step.url, item, env);
   const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
@@ -648,6 +714,32 @@ function buildStepRequestState(step, item, env) {
     headers: { ...buildHeaders(step, url, step.method, item, env), ...bodyHeaders },
     body: data,
   };
+}
+
+function buildStepScriptRequestState(step, item, env) {
+  const url = replacePlaceholders(step.url, item, env);
+  const initialBody = step.bodyType === 'raw' ? (step.body || '') : undefined;
+  return {
+    method: step.method || 'GET',
+    url,
+    headers: buildHeaders(step, url, step.method, item, env),
+    body: initialBody,
+    __initialBody: initialBody,
+  };
+}
+
+function finalizeStepRequestState(step, item, env, state) {
+  const finalUrl = replacePlaceholders(state.url, item, env);
+  const bodyWasChangedByScript = state.body !== state.__initialBody;
+  const { data, headers: bodyHeaders } = bodyWasChangedByScript
+    ? { data: state.body, headers: {} }
+    : buildRequestBody(step, item, env);
+  const currentHeaders = { ...(state.headers || {}) };
+
+  delete state.__initialBody;
+  state.url = finalUrl;
+  state.headers = { ...buildHeaders(step, finalUrl, state.method, item, env), ...bodyHeaders, ...currentHeaders };
+  state.body = data;
 }
 
 function applyRequestStatePlaceholders(state, item, env) {
@@ -674,7 +766,7 @@ async function sendScriptRequest(options, item, env, signal) {
       url,
       headers,
       data,
-      timeout: requestOptions.timeout || 30000,
+      timeout: requestOptions.timeout || 1000000,
       signal,
     });
     return { status: res.status, statusText: res.statusText, headers: res.headers, data: res.data };
@@ -746,14 +838,16 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
         let stepEnv = env;
 
         try {
-          const requestState = buildStepRequestState(step, item, stepEnv);
+          const prerequestCode = getScriptCode(step, 'prerequest');
+          const requestState = prerequestCode
+            ? buildStepScriptRequestState(step, item, stepEnv)
+            : buildStepRequestState(step, item, stepEnv);
           currentUrl = requestState.url;
           requestBody = serializeRequestBody(requestState.body);
           requestHeaders = requestState.headers;
           requestMethod = requestState.method;
 
           // Execute pre-request script if enabled
-          const prerequestCode = getScriptCode(step, 'prerequest');
           if (prerequestCode) {
             const scriptResult = await executeScript(
               prerequestCode,
@@ -796,6 +890,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
 
             // Update env with any changes made by script
             if (scriptResult.env) Object.assign(stepEnv, scriptResult.env);
+            finalizeStepRequestState(step, item, stepEnv, requestState);
           }
 
           applyRequestStatePlaceholders(requestState, item, stepEnv);
@@ -810,7 +905,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
             headers: requestState.headers,
             data: requestState.body,
             signal: abortController.signal,
-            timeout: 30000,
+            timeout: 1000000,
             validateStatus: () => true,
           });
 
@@ -932,12 +1027,14 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
   const env = environment || {};
   try {
     const item = testData ? JSON.parse(testData) : {};
-    const requestState = buildStepRequestState(step, item, env);
+    const prerequestCode = getScriptCode(step, 'prerequest');
+    const requestState = prerequestCode
+      ? buildStepScriptRequestState(step, item, env)
+      : buildStepRequestState(step, item, env);
     let currentUrl = requestState.url;
     let requestBody = serializeRequestBody(requestState.body);
     let requestHeaders = requestState.headers;
 
-    const prerequestCode = getScriptCode(step, 'prerequest');
     if (prerequestCode) {
       const scriptResult = await executeScript(
         prerequestCode,
@@ -968,13 +1065,14 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
       }
 
       if (scriptResult.env) Object.assign(env, scriptResult.env);
+      finalizeStepRequestState(step, item, env, requestState);
     }
 
     applyRequestStatePlaceholders(requestState, item, env);
     currentUrl = requestState.url;
     requestBody = serializeRequestBody(requestState.body);
     requestHeaders = requestState.headers;
-    let response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 30000, validateStatus: () => true });
+    let response = await axios({ method: requestState.method, url: requestState.url, headers: requestState.headers, data: requestState.body, timeout: 1000000, validateStatus: () => true });
 
     const postresponseCode = getScriptCode(step, 'postresponse');
     if (postresponseCode) {
@@ -1024,6 +1122,40 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
     return err;
   }
+});
+
+ipcMain.handle('run-script-lab', async (event, { code, data, environment, timeout }) => {
+  const env = environment || {};
+  const logs = [];
+  let parsedData = {};
+
+  try {
+    if (typeof data === 'string' && data.trim()) parsedData = JSON.parse(data);
+    else if (data && typeof data === 'object') parsedData = data;
+  } catch (e) {
+    return { success: false, error: 'Data JSON error: ' + e.message, logs, environment: env };
+  }
+
+  const result = await executeScript(
+    code || '',
+    {
+      env,
+      step: { name: 'Script Lab' },
+      data: parsedData,
+      request: { method: 'GET', url: '', headers: {}, body: undefined },
+      callbacks: {
+        ...createScriptCallbacks([], parsedData, env, undefined),
+        log: (...args) => logs.push(args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')),
+      },
+    },
+    Math.max(1000, Number(timeout) || 10000),
+  );
+
+  return {
+    ...result,
+    logs,
+    environment: env,
+  };
 });
 
 // ================== History IPC ==================

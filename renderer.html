@@ -113,6 +113,7 @@
 
                     <button id="newFolderBtn" title="Создать папку">📁 Папка</button>
                     <button id="newRootCollectionBtn" title="Создать запрос">＋ Запрос</button>
+                    <button id="scriptLabBtn" title="Создать script-запрос">⚙ Script</button>
 
                     <div class="data-dropdown">
                         <button id="appDataBtn">💾 Данные</button>
@@ -372,17 +373,57 @@
                     <input id="scriptPresetDescriptionInput" type="text" placeholder="Коротко что делает пресет">
                 </div>
                 <div class="field">
-                    <label>Pre-request</label>
+                    <div class="field-label-row">
+                        <label>Pre-request</label>
+                        <button id="formatScriptPresetPreBtn" class="secondary tiny-btn" type="button">Форматировать</button>
+                    </div>
                     <textarea id="scriptPresetPreInput" class="script-preset-code"></textarea>
                 </div>
                 <div class="field">
-                    <label>Post-response</label>
+                    <div class="field-label-row">
+                        <label>Post-response</label>
+                        <button id="formatScriptPresetPostBtn" class="secondary tiny-btn" type="button">Форматировать</button>
+                    </div>
                     <textarea id="scriptPresetPostInput" class="script-preset-code"></textarea>
                 </div>
             </div>
             <div class="modal-actions">
                 <button id="saveScriptPresetBtn" type="button">Сохранить пресет</button>
             </div>
+        </div>
+    </div>
+
+    <div id="scriptLabModal" class="modal">
+        <div class="modal-content script-lab-modal">
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">Script Lab</h3>
+                <button id="closeScriptLabBtn" class="modal-close-icon" title="Закрыть">✕</button>
+            </div>
+            <p class="modal-description">Для продвинутых сценариев: пишите script и отправляйте запросы через pm.sendRequest без создания обычного запроса.</p>
+            <div class="script-lab-grid">
+                <div class="field">
+                    <div class="field-label-row">
+                        <label>Script</label>
+                        <button id="formatScriptLabBtn" class="secondary tiny-btn" type="button">Форматировать</button>
+                    </div>
+                    <textarea id="scriptLabCode" class="script-lab-code" spellcheck="false">const response = await pm.sendRequest({
+  method: 'GET',
+  url: pm.env.get('baseUrl')
+});
+
+pm.log('Status:', response.status);
+return response.data;</textarea>
+                </div>
+                <div class="field">
+                    <label>Data JSON</label>
+                    <textarea id="scriptLabData" class="script-lab-data" spellcheck="false">{}</textarea>
+                </div>
+            </div>
+            <div class="script-lab-controls">
+                <label>Timeout (ms)<input id="scriptLabTimeout" type="number" min="1000" value="10000"></label>
+                <button id="runScriptLabBtn" type="button">▶ Запустить script</button>
+            </div>
+            <pre id="scriptLabOutput" class="script-lab-output">Результат появится здесь.</pre>
         </div>
     </div>
 

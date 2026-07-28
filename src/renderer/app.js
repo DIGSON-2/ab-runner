@@ -11,6 +11,8 @@ import {
   createBodySearchPanel,
   createCodeMirrorEditor,
   destroyAllEditors,
+  formatCodeMirrorEditor,
+  formatJavaScriptText,
   updateEditorsTheme,
 } from './editorManager.js';
 
@@ -22,6 +24,7 @@ let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
 let sidebarWidth = 260;
+let scriptLabEditor = null;
 const OPEN_TABS_LIMIT_KEY = 'ab-runner-open-tabs-limit';
 const DEFAULT_OPEN_TABS_LIMIT = 10;
 const MIN_OPEN_TABS_LIMIT = 1;
@@ -90,6 +93,8 @@ const {
   scriptPresetDescriptionInput,
   scriptPresetPreInput,
   scriptPresetPostInput,
+  formatScriptPresetPreBtn,
+  formatScriptPresetPostBtn,
   newScriptPresetBtn,
   saveScriptPresetBtn,
   deleteScriptPresetBtn,
@@ -151,6 +156,15 @@ const {
   importDropdownMenu,
   importFilesBtn,
   importFolderBtn,
+  scriptLabBtn,
+  scriptLabModal,
+  closeScriptLabBtn,
+  scriptLabCode,
+  scriptLabData,
+  scriptLabTimeout,
+  runScriptLabBtn,
+  formatScriptLabBtn,
+  scriptLabOutput,
   sidebarFunctionsBtn,
   sidebarFunctionsMenu,
   appDataBtn,
@@ -330,12 +344,53 @@ function openScriptPresetManager(presetId) {
   scriptPresetNameInput?.focus();
 }
 
+function formatScriptTextarea(textarea) {
+  if (!textarea) return;
+  textarea.value = formatJavaScriptText(textarea.value);
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  toast('Script отформатирован', 'success', 1200);
+}
+
+function ensureScriptLabEditor() {
+  if (!scriptLabCode || scriptLabEditor || !scriptLabCode.parentNode) return;
+  const parent = scriptLabCode.parentNode;
+  const nextSibling = scriptLabCode.nextSibling;
+  const created = createCodeMirrorEditor(scriptLabCode, scriptLabCode.value, 'javascript', '52vh');
+  scriptLabEditor = created.editor;
+  parent.insertBefore(created.wrapper, nextSibling);
+  activeEditors.set('cm-script-lab', { editor: created.editor, wrapper: created.wrapper });
+  setTimeout(() => {
+    scriptLabEditor?.refresh();
+    scriptLabEditor?.focus();
+  }, 60);
+}
+
+function getScriptLabCode() {
+  return scriptLabEditor ? scriptLabEditor.getValue() : scriptLabCode?.value || '';
+}
+
+function formatScriptLabCode() {
+  if (!scriptLabCode) return;
+  ensureScriptLabEditor();
+  formatCodeMirrorEditor(scriptLabEditor, scriptLabCode);
+  scriptLabEditor?.focus();
+  toast('Script Lab отформатирован', 'success', 1200);
+}
+
 function refreshScriptPresetControls() {
   if (activeCollection) renderCollectionEditor();
 }
 
 if (scriptPresetManagerSelect) {
   scriptPresetManagerSelect.addEventListener('change', () => fillScriptPresetManager(scriptPresetManagerSelect.value));
+}
+
+if (formatScriptPresetPreBtn) {
+  formatScriptPresetPreBtn.addEventListener('click', () => formatScriptTextarea(scriptPresetPreInput));
+}
+
+if (formatScriptPresetPostBtn) {
+  formatScriptPresetPostBtn.addEventListener('click', () => formatScriptTextarea(scriptPresetPostInput));
 }
 
 if (newScriptPresetBtn) {
@@ -606,7 +661,8 @@ resizer.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('mousemove', (e) => {
   if (!isResizing) return;
-  const w = Math.max(200, Math.min(Math.floor(window.innerWidth * 0.4), startWidth + (e.clientX - startX)));
+  const maxSidebarWidth = Math.min(460, Math.floor(window.innerWidth * 0.32));
+  const w = Math.max(240, Math.min(maxSidebarWidth, startWidth + (e.clientX - startX)));
   sidebar.style.width = w + 'px';
   sidebarWidth = w;
 });
@@ -1476,6 +1532,72 @@ if (importFolderBtn) {
   });
 }
 
+if (scriptLabBtn) {
+  scriptLabBtn.addEventListener('click', async () => {
+    closeSidebarFunctionMenus();
+    const nc = {
+      id: generateUniqueId(),
+      type: 'script',
+      name: 'Новый script',
+      folderId: null,
+      steps: [],
+      script: {
+        code: `const response = await pm.sendRequest({
+  method: 'GET',
+  url: pm.env.get('baseUrl')
+});
+
+pm.log('Status:', response.status);
+return response.data;`,
+        data: '{}',
+        timeout: 10000,
+      },
+    };
+    data.collections.push(nc);
+    await saveData();
+    selectCollection(nc.id);
+    renderTree();
+  });
+}
+
+if (closeScriptLabBtn) {
+  closeScriptLabBtn.addEventListener('click', () => scriptLabModal?.classList.remove('active'));
+}
+
+if (formatScriptLabBtn) {
+  formatScriptLabBtn.addEventListener('click', formatScriptLabCode);
+}
+
+if (runScriptLabBtn) {
+  runScriptLabBtn.addEventListener('click', async () => {
+    if (!window.api.runScriptLab) return;
+    runScriptLabBtn.disabled = true;
+    scriptLabOutput.textContent = 'Выполнение...';
+    try {
+      const result = await window.api.runScriptLab(
+        getScriptLabCode(),
+        scriptLabData.value,
+        getActiveEnvironment(),
+        Number(scriptLabTimeout.value) || 10000,
+      );
+      if (result.environment) applyRuntimeEnvironmentValues(result.environment);
+      const output = {
+        success: result.success,
+        error: result.error || null,
+        logs: result.logs || [],
+        result: result.result,
+      };
+      scriptLabOutput.textContent = JSON.stringify(output, null, 2);
+      toast(result.success ? 'Script выполнен' : 'Script завершился ошибкой', result.success ? 'success' : 'error');
+    } catch (e) {
+      scriptLabOutput.textContent = e.stack || e.message;
+      toast('Ошибка Script Lab: ' + e.message, 'error');
+    } finally {
+      runScriptLabBtn.disabled = false;
+    }
+  });
+}
+
 if (exportAppDataBtn) {
   exportAppDataBtn.addEventListener('click', async () => {
     closeSidebarFunctionMenus();
@@ -2120,6 +2242,165 @@ function showEmptyState() {
   collectionEditorEl.style.display = 'none';
   emptyStateEl.style.display = 'block';
 }
+
+function isScriptCollection(collection) {
+  return collection?.type === 'script';
+}
+
+function ensureScriptCollectionState(collection) {
+  if (!collection.script || typeof collection.script !== 'object' || Array.isArray(collection.script)) {
+    collection.script = {};
+  }
+  collection.script.code =
+    collection.script.code == null || collection.script.code === 'undefined'
+      ? `const response = await pm.sendRequest({
+  method: 'GET',
+  url: pm.env.get('baseUrl')
+});
+
+pm.log('Status:', response.status);
+return response.data;`
+      : String(collection.script.code);
+  collection.script.data =
+    collection.script.data == null || collection.script.data === 'undefined' ? '{}' : String(collection.script.data);
+  collection.script.timeout = Number(collection.script.timeout) || 10000;
+  return collection.script;
+}
+
+function setCollectionWorkMode(mode) {
+  const isScriptMode = mode === 'script';
+  const stepsHeader = collectionEditorEl.querySelector('.steps-header');
+  const runBar = collectionEditorEl.querySelector('.run-bar');
+  const localTabs = collectionEditorEl.querySelector('.local-history-tabs');
+  if (stepsHeader) stepsHeader.style.display = isScriptMode ? 'none' : '';
+  if (runBar) runBar.style.display = isScriptMode ? 'none' : '';
+  if (localTabs) localTabs.style.display = 'none';
+  if (runnerTab) runnerTab.style.display = 'none';
+  if (historyTab) historyTab.style.display = 'none';
+}
+
+function renderScriptCollectionEditor() {
+  destroyAllEditors();
+  setCollectionWorkMode('script');
+  runnerResultsBody.innerHTML = '';
+  progressEl.innerHTML = '';
+  stepsContainer.innerHTML = '';
+
+  const script = ensureScriptCollectionState(activeCollection);
+  const shell = document.createElement('div');
+  shell.className = 'script-workspace';
+
+  const head = document.createElement('div');
+  head.className = 'script-workspace-head';
+  const title = document.createElement('div');
+  title.append(txt('strong', 'Script'));
+  title.append(txt('span', 'Пишите JavaScript и отправляйте запросы через pm.sendRequest без обычных шагов.'));
+  const actions = document.createElement('div');
+  actions.className = 'script-workspace-actions';
+  const formatBtn = document.createElement('button');
+  formatBtn.type = 'button';
+  formatBtn.className = 'secondary';
+  formatBtn.textContent = 'Форматировать';
+  const runBtn = document.createElement('button');
+  runBtn.type = 'button';
+  runBtn.textContent = '▶ Run';
+  actions.append(formatBtn, runBtn);
+  head.append(title, actions);
+
+  const grid = document.createElement('div');
+  grid.className = 'script-workspace-grid';
+
+  const codeField = document.createElement('div');
+  codeField.className = 'field script-code-field';
+  codeField.appendChild(txt('label', 'Script'));
+  const codeTextarea = document.createElement('textarea');
+  codeTextarea.spellcheck = false;
+  const { wrapper: codeWrapper, editor: codeEditor } = createCodeMirrorEditor(codeTextarea, script.code, 'javascript', '58vh');
+  activeEditors.set(`cm-script-collection-${activeCollection.id}`, { editor: codeEditor, wrapper: codeWrapper });
+  codeField.appendChild(codeWrapper);
+
+  const side = document.createElement('div');
+  side.className = 'script-side-panel';
+  const dataField = document.createElement('div');
+  dataField.className = 'field';
+  dataField.appendChild(txt('label', 'Data JSON'));
+  const dataTextarea = document.createElement('textarea');
+  dataTextarea.className = 'script-data-input';
+  dataTextarea.spellcheck = false;
+  dataTextarea.value = script.data;
+  dataField.appendChild(dataTextarea);
+
+  const timeoutField = document.createElement('div');
+  timeoutField.className = 'field script-timeout-field';
+  timeoutField.appendChild(txt('label', 'Timeout (ms)'));
+  const timeoutInput = document.createElement('input');
+  timeoutInput.type = 'number';
+  timeoutInput.min = '1000';
+  timeoutInput.value = String(script.timeout);
+  timeoutField.appendChild(timeoutInput);
+
+  const output = document.createElement('pre');
+  output.className = 'script-workspace-output';
+  output.textContent = 'Результат появится здесь.';
+
+  side.append(dataField, timeoutField, output);
+  grid.append(codeField, side);
+  shell.append(head, grid);
+  stepsContainer.appendChild(shell);
+
+  const persistScript = debounce(() => {
+    script.code = codeEditor ? codeEditor.getValue() : codeTextarea.value;
+    script.data = dataTextarea.value;
+    script.timeout = Number(timeoutInput.value) || 10000;
+    debouncedSave();
+  }, 250);
+
+  if (codeEditor) codeEditor.on('change', persistScript);
+  else codeTextarea.addEventListener('input', persistScript);
+  dataTextarea.addEventListener('input', persistScript);
+  timeoutInput.addEventListener('input', persistScript);
+
+  formatBtn.onclick = () => {
+    const formatted = formatCodeMirrorEditor(codeEditor, codeTextarea);
+    script.code = formatted;
+    debouncedSave();
+    codeEditor?.focus();
+    toast('Script отформатирован', 'success', 1200);
+  };
+
+  runBtn.onclick = async () => {
+    if (!window.api.runScriptLab) return;
+    script.code = codeEditor ? codeEditor.getValue() : codeTextarea.value;
+    script.data = dataTextarea.value;
+    script.timeout = Number(timeoutInput.value) || 10000;
+    await saveData();
+    runBtn.disabled = true;
+    output.textContent = 'Выполнение...';
+    try {
+      const result = await window.api.runScriptLab(script.code, script.data, getActiveEnvironment(), script.timeout);
+      if (result.environment) applyRuntimeEnvironmentValues(result.environment);
+      output.textContent = JSON.stringify(
+        {
+          success: result.success,
+          error: result.error || null,
+          logs: result.logs || [],
+          result: result.result,
+        },
+        null,
+        2,
+      );
+      toast(result.success ? 'Script выполнен' : 'Script завершился ошибкой', result.success ? 'success' : 'error');
+    } catch (e) {
+      output.textContent = e.stack || e.message;
+      toast('Ошибка Script: ' + e.message, 'error');
+    } finally {
+      runBtn.disabled = false;
+    }
+  };
+
+  requestAnimationFrame(() => codeEditor?.refresh());
+}
+
 function renderCollectionEditor() {
   emptyStateEl.style.display = 'none';
   collectionEditorEl.style.display = 'block';
@@ -2137,14 +2418,19 @@ function renderCollectionEditor() {
   };
   runnerResultsBody.innerHTML = '';
   progressEl.innerHTML = '';
-  if (runnerTab) runnerTab.style.display = 'none';
-  if (historyTab) historyTab.style.display = 'none';
+  if (isScriptCollection(activeCollection)) {
+    renderScriptCollectionEditor();
+    return;
+  }
+  setCollectionWorkMode('collection');
   renderSteps();
 }
 function getCollectionIcon(c) {
+  if (isScriptCollection(c)) return '⚙';
   return !c.steps || !c.steps.length ? '' : '📄';
 }
 function getCollectionMethodBadge(c) {
+  if (isScriptCollection(c)) return 'SCRIPT';
   if (!c.steps || !c.steps.length) return null;
   const m = [...new Set(c.steps.map((s) => s.method).filter(Boolean))];
   return m.length === 1 ? m[0] : m.length > 1 ? 'MIX' : null;
@@ -2758,6 +3044,19 @@ function createStepCard(step, idx) {
     textarea.value = step.scripts[type].code;
     const { wrapper, editor } = createCodeMirrorEditor(textarea, step.scripts[type].code, 'javascript', '520px');
     activeEditors.set(editorId, { editor, wrapper });
+    const toolbar = document.createElement('div');
+    toolbar.className = 'script-editor-toolbar';
+    const formatBtn = document.createElement('button');
+    formatBtn.type = 'button';
+    formatBtn.className = 'secondary tiny-btn';
+    formatBtn.textContent = 'Форматировать';
+    formatBtn.addEventListener('click', () => {
+      const formatted = formatCodeMirrorEditor(editor, textarea);
+      step.scripts[type].code = formatted;
+      debouncedSave();
+      toast('Script отформатирован', 'success', 1200);
+    });
+    toolbar.appendChild(formatBtn);
 
     if (editor) {
       editor.on('change', () => {
@@ -2765,6 +3064,7 @@ function createStepCard(step, idx) {
         debouncedSave();
       });
     }
+    parent.appendChild(toolbar);
     parent.appendChild(wrapper);
     return { editor };
   };
@@ -3807,6 +4107,10 @@ function updateRawJsonFromInputs() {
 function prepareRawJsonBody(step) {
   if (!step || step.bodyType !== 'raw' || step.rawType !== 'json' || !step.body || !step.body.trim()) return true;
   try {
+    if (/\{\{\s*[A-Za-z0-9_$-]+(?:\.[A-Za-z0-9_$-]+)*\s*\}\}/.test(step.body)) {
+      repairJsonText(step.body.replace(/\{\{\s*[A-Za-z0-9_$-]+(?:\.[A-Za-z0-9_$-]+)*\s*\}\}/g, 'null'));
+      return true;
+    }
     const repaired = repairJsonText(step.body);
     if (repaired !== step.body) {
       step.body = repaired;
@@ -4545,6 +4849,7 @@ if (themeToggle)
 async function loadData() {
   try {
     data = await window.api.getData();
+    delete data.__loadFailed;
     if (!data.folders) data.folders = [];
     if (!data.collections) data.collections = [];
     if (!data.environments) data.environments = [];
@@ -4578,8 +4883,8 @@ async function loadData() {
     else showEmptyState();
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
-    data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
-    normalizeScriptPresets();
+    data.__loadFailed = true;
+    showEmptyState();
     toast('Ошибка загрузки данных', 'error');
   }
 }
@@ -4592,6 +4897,11 @@ async function saveData() {
   if (!data.environments) {
     console.error('⚠️ ВНИМАНИЕ: data.environments отсутствует!');
     data.environments = [];
+  }
+  const hasNoWorkspaceData = (!data.folders || data.folders.length === 0) && (!data.collections || data.collections.length === 0);
+  if (hasNoWorkspaceData && data.__loadFailed) {
+    console.warn('Save skipped because data load failed');
+    return;
   }
   ensurePlatformsShape();
   normalizeScriptPresets();

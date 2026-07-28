@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('api', {
     onStop: (callback) => ipcRenderer.on('collection-stopped', () => callback()),
     sendSingleRequest: (step, testData, collectionName, environment, collectionSteps) =>
         ipcRenderer.invoke('send-single-request', { step, testData, collectionName, environment, collectionSteps }),
+    runScriptLab: (code, data, environment, timeout) =>
+        ipcRenderer.invoke('run-script-lab', { code, data, environment, timeout }),
     getHistory: (query) => ipcRenderer.invoke('get-history', query),
     clearHistory: () => ipcRenderer.invoke('clear-history'),
     clearHistoryFiltered: (filters) => ipcRenderer.invoke('clear-history-filtered', filters),

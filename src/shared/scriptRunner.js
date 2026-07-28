@@ -38,6 +38,9 @@ return (async () => {
       const pmApi = createPmApi(context.env, {
         log: (...args) => {
           console.log('[Script]', ...args);
+          if (context.callbacks && context.callbacks.log) {
+            context.callbacks.log(...args);
+          }
         },
         runStep: async (stepId, data) => {
           if (context.callbacks && context.callbacks.runStep) {

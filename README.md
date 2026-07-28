@@ -241,6 +241,45 @@ msk
 
 После этого значение `platform` можно выбирать из выпадающего списка внутри ENV. Для разных основных доменов, например `wmsx.fmlogistic.ru` и `paradigma.fmlogistic.ru`, удобнее завести разные окружения, а внутри каждого окружения держать свой список `platform`.
 
+### Массивы и объекты в ENV
+
+ENV-значения хранятся как текст, но в Raw JSON их можно использовать как настоящий JSON-фрагмент.
+
+Пример ENV:
+
+```text
+carriers = ["CDEK", "DPD"]
+warehouse = {"id": 227, "code": "M50"}
+```
+
+В body используйте такие переменные без кавычек:
+
+```json
+{
+  "carriers": {{carriers}},
+  "warehouse": {{warehouse}}
+}
+```
+
+После подстановки это станет:
+
+```json
+{
+  "carriers": ["CDEK", "DPD"],
+  "warehouse": { "id": 227, "code": "M50" }
+}
+```
+
+Если написать переменную в кавычках:
+
+```json
+{
+  "carriers": "{{carriers}}"
+}
+```
+
+то результат будет строкой, а не массивом.
+
 ## Headers
 
 Во вкладке `Headers` добавляются пары ключ/значение.
@@ -448,6 +487,41 @@ username
 password
 token
 ```
+
+### Script Lab
+
+В меню `Функции` есть `Script Lab`.
+
+Это отдельное место для продвинутых сценариев, когда нужно отправить запросы только через script, без создания коллекции или обычного запроса.
+
+В Script Lab доступны:
+
+- `pm.env.get/set`;
+- `pm.sendRequest`;
+- `pm.log`;
+- `data` из поля `Data JSON`;
+- возврат результата через `return`.
+
+Пример:
+
+```js
+const response = await pm.sendRequest({
+  method: 'POST',
+  url: pm.env.get('baseUrl') + '/auth/token',
+  headers: { 'Content-Type': 'application/json' },
+  body: {
+    username: pm.env.get('username'),
+    password: pm.env.get('password')
+  }
+});
+
+pm.env.set('token', response.data.token);
+pm.log('Token обновлен');
+
+return response.data;
+```
+
+Если script меняет ENV через `pm.env.set`, активное окружение обновится в приложении.
 
 ### Пример: получить токен перед запросом
 

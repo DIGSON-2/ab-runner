@@ -1,5 +1,100 @@
 export const activeEditors = new Map();
 
+export function formatJavaScriptText(source = '') {
+  const text = String(source || '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return '';
+
+  const lines = text.split('\n');
+  const formatted = [];
+  let indent = 0;
+  let inString = false;
+  let stringQuote = '';
+  let inBlockComment = false;
+  const unit = '  ';
+
+  const countStructuralTokens = (line) => {
+    let opens = 0;
+    let closes = 0;
+    let localString = inString;
+    let localQuote = stringQuote;
+    let localBlockComment = inBlockComment;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const next = line[i + 1];
+
+      if (localBlockComment) {
+        if (char === '*' && next === '/') {
+          localBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+
+      if (localString) {
+        if (char === '\\' && i + 1 < line.length) {
+          i++;
+          continue;
+        }
+        if (char === localQuote) localString = false;
+        continue;
+      }
+
+      if (char === '/' && next === '/') break;
+      if (char === '/' && next === '*') {
+        localBlockComment = true;
+        i++;
+        continue;
+      }
+      if (char === '"' || char === "'" || char === '`') {
+        localString = true;
+        localQuote = char;
+        continue;
+      }
+      if (char === '{' || char === '[') opens++;
+      if (char === '}' || char === ']') closes++;
+    }
+
+    inString = localString;
+    stringQuote = localQuote;
+    inBlockComment = localBlockComment;
+    return { opens, closes };
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      if (formatted[formatted.length - 1] !== '') formatted.push('');
+      continue;
+    }
+
+    const startsWithClose = /^[}\]]/.test(trimmed);
+    if (startsWithClose) indent = Math.max(0, indent - 1);
+
+    formatted.push(unit.repeat(Math.max(indent, 0)) + trimmed);
+
+    const { opens, closes } = countStructuralTokens(trimmed);
+    indent = Math.max(0, indent + opens - closes - (startsWithClose ? -1 : 0));
+  }
+
+  return formatted
+    .map((line) => line.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function formatCodeMirrorEditor(editor, fallbackTextarea = null) {
+  const current = editor ? editor.getValue() : fallbackTextarea?.value || '';
+  const formatted = formatJavaScriptText(current);
+  if (editor) editor.setValue(formatted);
+  else if (fallbackTextarea) {
+    fallbackTextarea.value = formatted;
+    fallbackTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  return formatted;
+}
+
 export function createCodeMirrorEditor(textarea, initialValue = '', mode = 'javascript', height = '180px') {
   const editorValue = initialValue == null || initialValue === 'undefined' ? '' : String(initialValue);
   textarea.value = editorValue;
