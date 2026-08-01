@@ -255,26 +255,40 @@ body {
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  padding-bottom: 2px;
 }
 
 .collection-tabs::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+
+.collection-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.collection-tabs::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
 }
 
 .tab-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
+  flex: 0 0 170px;
+  width: 170px;
+  height: 36px;
+  padding: 0 10px 0 12px;
   background: transparent;
   color: var(--text-secondary);
-  border-right: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-right-color: var(--border);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  max-width: 200px;
   min-width: 0;
   transition: all var(--transition-fast);
   position: relative;
@@ -282,11 +296,12 @@ body {
 
 .tab-name {
   display: block;
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .tab-item:hover {
@@ -301,12 +316,18 @@ body {
 }
 
 .tab-item .tab-close {
-  opacity: 0;
+  opacity: 0.58;
   font-size: 14px;
-  padding: 2px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border-radius: 4px;
   transition: all var(--transition-fast);
   flex-shrink: 0;
+  pointer-events: auto;
 }
 
 .tab-item:hover .tab-close {

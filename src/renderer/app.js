@@ -195,6 +195,17 @@ if (workspaceTabsLimitInput) {
     }
   });
 }
+if (collectionTabsEl) {
+  collectionTabsEl.addEventListener(
+    'wheel',
+    (e) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      e.preventDefault();
+      collectionTabsEl.scrollLeft += e.deltaY;
+    },
+    { passive: false },
+  );
+}
 
 // ================== JSON Formatter ==================
 
@@ -2184,6 +2195,7 @@ function renderTabs() {
   openTabs.forEach((tab) => {
     const tabEl = document.createElement('div');
     tabEl.className = `tab-item${activeCollectionId === tab.id ? ' active' : ''}`;
+    tabEl.addEventListener('click', () => selectCollection(tab.id));
     tabEl.title = tab.name || 'Без названия';
     tabEl.addEventListener('mousedown', (e) => {
       if (e.button === 1) e.preventDefault();
@@ -2198,7 +2210,6 @@ function renderTabs() {
     const nameEl = document.createElement('span');
     nameEl.className = 'tab-name';
     nameEl.textContent = truncateName(tab.name);
-    nameEl.onclick = () => selectCollection(tab.id);
 
     const closeEl = document.createElement('span');
     closeEl.className = 'tab-close';
@@ -2210,6 +2221,12 @@ function renderTabs() {
 
     tabEl.append(nameEl, closeEl);
     collectionTabsEl.appendChild(tabEl);
+  });
+
+  collectionTabsEl.querySelector('.tab-item.active')?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'nearest',
+    inline: 'nearest',
   });
 }
 
