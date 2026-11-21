@@ -53,6 +53,35 @@ describe('jsonFormat module', () => {
     expect(parseJsonValue('hello')).toBe('hello');
     expect(parseJsonValue('{"x":1}')).toEqual({ x: 1 });
   });
+
+  test('parseJsonValue keeps long numeric ids as strings (no precision loss)', () => {
+    // Reproduced with a real id: parseInt turned it into 677045499780735000.
+    expect(parseJsonValue('00677045499780734996')).toBe('00677045499780734996');
+    expect(JSON.stringify({ id: parseJsonValue('00677045499780734996') })).toBe(
+      '{"id":"00677045499780734996"}',
+    );
+  });
+
+  test('parseJsonValue keeps integers beyond MAX_SAFE_INTEGER as strings', () => {
+    expect(parseJsonValue('9007199254740993')).toBe('9007199254740993');
+    expect(parseJsonValue('9007199254740991')).toBe(9007199254740991);
+    expect(parseJsonValue('-9007199254740993')).toBe('-9007199254740993');
+  });
+
+  test('parseJsonValue keeps leading-zero numbers as strings', () => {
+    expect(parseJsonValue('007')).toBe('007');
+    expect(parseJsonValue('0')).toBe(0);
+    expect(parseJsonValue('-0')).toBe('-0');
+  });
+
+  test('parseJsonValue still normalizes ordinary decimals', () => {
+    expect(parseJsonValue('3.50')).toBe(3.5);
+    expect(parseJsonValue('0.10')).toBe(0.1);
+    expect(parseJsonValue('-2.25')).toBe(-2.25);
+    expect(parseJsonValue('1.000')).toBe(1);
+    expect(parseJsonValue('.5')).toBe(0.5);
+    expect(parseJsonValue('-.5')).toBe(-0.5);
+  });
 });
 
 describe('curlParser module', () => {

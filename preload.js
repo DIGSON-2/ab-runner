@@ -3,13 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
     getData: () => ipcRenderer.invoke('get-data'),
     saveData: (d) => ipcRenderer.invoke('save-data', d),
-    runCollection: (steps, items, delay, collectionName, environment) =>
-        ipcRenderer.invoke('run-collection', { steps, items, delay, collectionName, environment }),
+    runCollection: (steps, items, delay, collectionName, environment, collectionId) =>
+        ipcRenderer.invoke('run-collection', { steps, items, delay, collectionName, environment, collectionId }),
     stopCollection: () => ipcRenderer.invoke('stop-collection'),
     onProgress: (callback) => ipcRenderer.on('progress', (event, data) => callback(data)),
     onStop: (callback) => ipcRenderer.on('collection-stopped', () => callback()),
-    sendSingleRequest: (step, testData, collectionName, environment, collectionSteps) =>
-        ipcRenderer.invoke('send-single-request', { step, testData, collectionName, environment, collectionSteps }),
+    sendSingleRequest: (step, testData, collectionName, environment, collectionSteps, collectionId) =>
+        ipcRenderer.invoke('send-single-request', { step, testData, collectionName, collectionId, environment, collectionSteps }),
     runScriptLab: (code, data, environment, timeout) =>
         ipcRenderer.invoke('run-script-lab', { code, data, environment, timeout }),
     getHistory: (query) => ipcRenderer.invoke('get-history', query),
@@ -21,10 +21,13 @@ contextBridge.exposeInMainWorld('api', {
     exportAppBackup: (settings) => ipcRenderer.invoke('export-app-backup', settings),
     importAppBackup: () => ipcRenderer.invoke('import-app-backup'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    checkForUpdates: (options) => ipcRenderer.invoke('check-for-updates', options),
+    getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+    openExternal: (url) => ipcRenderer.invoke('open-external', url),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
     updateRecentCollection: (collectionId, reason) => ipcRenderer.invoke('update-recent-collection', collectionId, reason),
     getRecentCollections: () => ipcRenderer.invoke('get-recent-collections'),
+    onShowHotkeys: (callback) => ipcRenderer.on('show-hotkeys', () => callback()),
 
 });
 

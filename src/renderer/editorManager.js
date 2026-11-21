@@ -284,19 +284,36 @@ export function createBodySearchPanel(editor, onChange, onToast = () => {}) {
     refresh();
     onToast(`Заменено: ${changed}`, 'success', 1800);
   });
-  editor.on('change', () => refresh(true));
+  editor.on('change', debounceChange(() => refresh(true)));
   updateCounter();
   return panel;
 }
 
+// Пересканирование всего тела на каждое нажатие клавиши дорого для больших
+// JSON, поэтому обновляем подсветку совпадений с небольшой задержкой.
+function debounceChange(fn, delay = 200) {
+  let timer = null;
+  return () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn();
+    }, delay);
+  };
+}
+
 export function destroyAllEditors() {
-  activeEditors.forEach(({ editor }) => {
+  activeEditors.forEach((entry, id) => {
+    // Постоянные редакторы (например, Script Lab в модальном окне) не должны
+    // исчезать при перерисовке рабочей области.
+    if (!entry || entry.persistent) return;
+    const { editor } = entry;
     if (editor && typeof editor.toTextArea === 'function') {
       const wrapper = editor.getWrapperElement();
       if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
     }
+    activeEditors.delete(id);
   });
-  activeEditors.clear();
 }
 
 export function updateEditorsTheme() {

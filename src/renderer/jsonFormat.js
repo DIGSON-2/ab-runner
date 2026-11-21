@@ -360,16 +360,40 @@ export function formatJSON(text) {
   return result.trim();
 }
 
+// Числа из JSON Generator: приводим к числу только те значения, которые
+// переживают обратное преобразование без потерь. Иначе длинные ID/коды
+// (например, 00677045499780734996) теряли ведущие нули и точность:
+// parseInt давал 677045499780735000.
 export function parseJsonValue(value) {
-  if (/^-?\d+$/.test(value)) return parseInt(value, 10);
-  if (/^-?\d*\.\d+$/.test(value)) return parseFloat(value);
-  if (value.toLowerCase() === 'true') return true;
-  if (value.toLowerCase() === 'false') return false;
-  if (value.toLowerCase() === 'null') return null;
+  if (typeof value !== 'string') return value;
+  const text = value.trim();
 
-  if ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))) {
+  if (/^-?\d+$/.test(text)) {
+    // Ведущие нули — это код/ID, а не число.
+    if (/^-?0\d/.test(text)) return value;
+    const num = Number(text);
+    // Длинные целые выходят за MAX_SAFE_INTEGER: как число их нельзя хранить без потерь.
+    if (Number.isSafeInteger(num) && String(num) === text) return num;
+    return value;
+  }
+
+  if (/^-?\d*\.\d+$/.test(text)) {
+    const num = Number(text);
+    // 3.50 и 0.10 — нормальные числа, поэтому перед сравнением убираем хвостовые нули.
+    const normalized = text.replace(/0+$/, '').replace(/\.$/, '');
+    // ".5" и "-.5" записываем как 0.5 / -0.5.
+    const padded = normalized.replace(/^(-?)\./, '$10.');
+    if (Number.isFinite(num) && (String(num) === normalized || String(num) === padded)) return num;
+    return value;
+  }
+
+  if (text.toLowerCase() === 'true') return true;
+  if (text.toLowerCase() === 'false') return false;
+  if (text.toLowerCase() === 'null') return null;
+
+  if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
     try {
-      return JSON.parse(value);
+      return JSON.parse(text);
     } catch {
       /* not valid JSON, fall through to returning the raw string */
     }

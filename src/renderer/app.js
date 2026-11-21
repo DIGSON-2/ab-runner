@@ -1,11 +1,28 @@
-import { escapeHtml, txt, debounce, cachedJsonParse } from './utils.js';
+import {
+  escapeHtml,
+  txt,
+  debounce,
+  cachedJsonParse,
+  clampInt,
+  clampDelay,
+  clampScriptTimeout,
+  MAX_DELAY_MS,
+} from './utils.js';
 import { collectionRelevance } from './search.js';
-import { formatJSON, parseJsonValue, repairJsonText } from './jsonFormat.js';
+import { formatJSON, parseJsonValue, repairJsonText, stripJsonCommentsForFormat } from './jsonFormat.js';
 import { parseCurl } from './curlParser.js';
 import { countPostmanRequests } from './postman.js';
 import * as dom from './dom.js';
 import { generatePresetId, normalizeScriptPresets as normalizePresetList } from './scriptPresets.js';
 import { initRunnerDataDrawer } from './runnerDataDrawer.js';
+import { moveTab } from './tabs.js';
+import {
+  comboFromEvent,
+  comboToTabIndex,
+  findHotkey,
+  formatCombo,
+  isMacPlatform,
+} from './hotkeys.js';
 import {
   activeEditors,
   createBodySearchPanel,
@@ -20,6 +37,8 @@ let data = { folders: [], collections: [], environments: [], platforms: [], scri
 let activeCollectionId = null;
 let activeCollection = null;
 let openTabs = []; // Array of { id, name }
+// id вкладки, которую сейчас перетаскивают (null, если drag не активен).
+let draggingTabId = null;
 let searchQuery = '';
 let searchExpandedFolders = new Set();
 let currentStepForSend = null;
@@ -80,7 +99,6 @@ const {
   refreshHistoryBtn,
   clearHistoryBtn,
   clearHistoryFilterBtn,
-  jsonGeneratorBtn,
   importCurlBtn,
   inputModal,
   inputModalField,
@@ -107,6 +125,7 @@ const {
   updateStatusEl,
   checkUpdateBtn,
   installUpdateBtn,
+  downloadUpdateBtn,
   environmentSelect,
   platformSelect,
   addPlatformBtn,
@@ -159,6 +178,10 @@ const {
   scriptLabBtn,
   scriptLabModal,
   closeScriptLabBtn,
+  hotkeysBtn,
+  hotkeysModal,
+  hotkeysList,
+  closeHotkeysModalBtn,
   scriptLabCode,
   scriptLabData,
   scriptLabTimeout,
@@ -233,11 +256,10 @@ function formatCurrentEditor(editorId) {
 
     info.editor.setValue(formatted);
 
-    // Сохраняем в step.body
-    const step = activeCollection?.steps?.find((_, i) => {
-      const eid = 'cm-raw-' + i;
-      return editorId.startsWith(eid);
-    });
+    // Сохраняем в step.body. id редактора выглядит как cm-raw-<idx>-<timestamp>,
+    // поэтому индекс нужно вырезать целиком: префиксное сравнение путало шаг 1 и шаг 10.
+    const indexMatch = /^cm-raw-(\d+)-/.exec(editorId);
+    const step = indexMatch ? activeCollection?.steps?.[Number(indexMatch[1])] : null;
     if (step) {
       step.body = formatted;
       debouncedSave();
@@ -273,7 +295,14 @@ function confirmDialog(title, msg) {
     d.className = 'confirm-dialog';
     d.innerHTML = `<div class="confirm-dialog-content"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(msg)}</p><div class="confirm-dialog-actions"><button class="secondary cancel-btn">Отмена</button><button class="danger ok-btn">OK</button></div></div>`;
     document.body.appendChild(d);
+    let settled = false;
+    const onKey = (e) => {
+      if (e.key === 'Escape') cleanup(false);
+    };
     const cleanup = (r) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
       d.classList.remove('show');
       setTimeout(() => d.remove(), 200);
       res(r);
@@ -283,6 +312,7 @@ function confirmDialog(title, msg) {
     d.onclick = (e) => {
       if (e.target === d) cleanup(false);
     };
+    document.addEventListener('keydown', onKey, true);
     requestAnimationFrame(() => d.classList.add('show'));
   });
 }
@@ -299,7 +329,11 @@ function showInputModal(title, def, placeholder = '') {
     inputModalField.style.display = 'block';
     inputModal.classList.add('active');
     inputModalField.focus();
+    let settled = false;
     const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onEsc, true);
       inputModal.classList.remove('active');
       inputModalField.placeholder = '';
       inputModalOkBtn.removeEventListener('click', onOk);
@@ -307,8 +341,9 @@ function showInputModal(title, def, placeholder = '') {
       inputModalField.removeEventListener('keydown', onKey);
     };
     const onOk = () => {
+      const value = inputModalField.value.trim();
       cleanup();
-      res(inputModalField.value.trim());
+      res(value);
     };
     const onCancel = () => {
       cleanup();
@@ -318,6 +353,12 @@ function showInputModal(title, def, placeholder = '') {
       if (e.key === 'Enter') onOk();
       if (e.key === 'Escape') onCancel();
     };
+    // Escape должен именно завершать промис (иначе ожидающий вызов зависает
+    // навсегда), поэтому слушаем на документе в фазе перехвата.
+    const onEsc = (e) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', onEsc, true);
     inputModalOkBtn.addEventListener('click', onOk);
     inputModalCancelBtn.addEventListener('click', onCancel);
     inputModalField.addEventListener('keydown', onKey);
@@ -369,7 +410,9 @@ function ensureScriptLabEditor() {
   const created = createCodeMirrorEditor(scriptLabCode, scriptLabCode.value, 'javascript', '52vh');
   scriptLabEditor = created.editor;
   parent.insertBefore(created.wrapper, nextSibling);
-  activeEditors.set('cm-script-lab', { editor: created.editor, wrapper: created.wrapper });
+  // persistent: редактор живёт в модальном окне и не должен удаляться при
+  // перерисовке рабочей области коллекции.
+  activeEditors.set('cm-script-lab', { editor: created.editor, wrapper: created.wrapper, persistent: true });
   setTimeout(() => {
     scriptLabEditor?.refresh();
     scriptLabEditor?.focus();
@@ -473,7 +516,7 @@ function normalizeStepScripts(step) {
     if (!script || typeof script !== 'object' || Array.isArray(script)) return { code: '', timeout: 5000 };
     const rawCode = script.code;
     const code = rawCode == null || rawCode === 'undefined' ? '' : String(rawCode);
-    return { ...script, code, timeout: script.timeout || 5000 };
+    return { ...script, code, timeout: clampScriptTimeout(script.timeout) };
   };
 
   step.scripts = {
@@ -489,16 +532,28 @@ function applyRuntimeEnvironmentValues(values = {}) {
   const env = getActiveEnvironmentRecord();
   if (!env || !values || typeof values !== 'object') return;
   ensureEnvironmentShape(env);
+  let changed = false;
   Object.entries(values).forEach(([key, value]) => {
     if (!key) return;
+    const nextValue = value == null ? '' : String(value);
     const existing = env.variables.find((item) => item.key === key);
     if (existing) {
-      existing.value = value == null ? '' : String(value);
-      existing.enabled = existing.enabled !== false;
+      if (existing.value !== nextValue) {
+        existing.value = nextValue;
+        changed = true;
+      }
+      if (existing.enabled === false) {
+        existing.enabled = true;
+        changed = true;
+      }
     } else {
-      env.variables.push({ key, value: value == null ? '' : String(value), enabled: true });
+      env.variables.push({ key, value: nextValue, enabled: true });
+      changed = true;
     }
   });
+  // Прогресс запуска присылает окружение на каждый запрос: без этой проверки
+  // панель переменных перерисовывалась и данные сохранялись сотни раз впустую.
+  if (!changed) return;
   updateEnvironmentSelector();
   renderRightPanel();
   debouncedSave();
@@ -514,10 +569,35 @@ async function renderAppVersion() {
   }
 }
 
-function setUpdateStatus(message, type = 'idle') {
+function setUpdateStatus(message, type = 'idle', detail = '') {
   if (!updateStatusEl) return;
   updateStatusEl.textContent = message;
   updateStatusEl.dataset.status = type;
+  // Подробная причина (например, 429 от GitHub) — в подсказке, чтобы не раздувать строку.
+  updateStatusEl.title = detail || '';
+  // «Проверка...» — временный статус, к нему не возвращаемся после cooldown.
+  if (type !== 'checking') lastStableUpdateStatus = { message, type };
+}
+
+let lastStableUpdateStatus = { message: 'Обновления: не проверялись', type: 'idle' };
+
+const RELEASES_PAGE = 'https://github.com/DIGSON-2/ab-runner/releases/latest';
+let manualUpdateUrl = null;
+
+function showUpdateDownloadButton(url) {
+  manualUpdateUrl = url || RELEASES_PAGE;
+  if (downloadUpdateBtn) downloadUpdateBtn.style.display = 'inline-flex';
+}
+
+function hideUpdateDownloadButton() {
+  manualUpdateUrl = null;
+  if (downloadUpdateBtn) downloadUpdateBtn.style.display = 'none';
+}
+
+function showManualUpdate(fallback = {}) {
+  const version = fallback.version ? ` ${fallback.version}` : '';
+  setUpdateStatus(`Доступно обновление${version}. Скачайте установщик вручную.`, 'available-manual');
+  showUpdateDownloadButton(fallback.downloadUrl || fallback.pageUrl || RELEASES_PAGE);
 }
 
 function formatUpdateStatus(data = {}) {
@@ -526,16 +606,58 @@ function formatUpdateStatus(data = {}) {
       return 'Проверка обновлений...';
     case 'available':
       return `Доступно обновление${data.version ? ` ${data.version}` : ''}. Скачиваю...`;
+    case 'available-manual':
+      return data.version
+        ? `Доступно обновление ${data.version}. Скачайте установщик вручную.`
+        : 'Доступно обновление. Скачайте установщик вручную.';
     case 'current':
-      return 'Установлена последняя версия';
+      return data.version ? `Установлена последняя версия (v${data.version})` : 'Установлена последняя версия';
     case 'downloading':
       return `Загрузка обновления: ${data.percent || 0}%`;
     case 'downloaded':
       return 'Обновление загружено. Можно установить.';
+    case 'disabled':
+      return 'Автообновления работают только в установленной версии';
     case 'error':
       return `Ошибка обновления: ${data.message || 'неизвестная ошибка'}`;
     default:
       return data.message || 'Обновления: статус неизвестен';
+  }
+}
+
+// Показывает результат ручной/автоматической проверки.
+function applyUpdateCheckResult(result) {
+  if (!result) return;
+  if (result.busy) {
+    toast(result.error || 'Проверка уже выполняется', 'warning', 2500);
+    return;
+  }
+  if (result.cooldown) {
+    // Просто защита кнопки от спама: возвращаем предыдущий статус,
+    // чтобы «Проверка обновлений...» не осталась висеть навсегда.
+    setUpdateStatus(lastStableUpdateStatus.message, lastStableUpdateStatus.type);
+    toast(result.error || 'Проверка уже выполнялась только что', 'warning', 2500);
+    return;
+  }
+  if (result.upToDate) {
+    hideUpdateDownloadButton();
+    setUpdateStatus(`Установлена последняя версия (v${result.version})`, 'current');
+    return;
+  }
+  if (result.manualUpdate) {
+    showManualUpdate(result.manualUpdate);
+    toast(`Доступно обновление ${result.manualUpdate.version || ''}`.trim(), 'info', 5000);
+    return;
+  }
+  if (!result.success) {
+    const message =
+      result.error === 'Auto updates work only in packaged builds'
+        ? 'Автообновления работают только в установленной версии'
+        : result.error || 'Не удалось проверить обновления';
+    const kind = result.error === 'Auto updates work only in packaged builds' ? 'disabled' : result.rateLimited ? 'available-manual' : 'error';
+    setUpdateStatus(message, kind);
+    toast(message, result.rateLimited ? 'warning' : 'error', result.rateLimited ? 6500 : 5000);
+    if (result.fallback) showUpdateDownloadButton(result.fallback.downloadUrl || result.fallback.pageUrl);
   }
 }
 
@@ -546,15 +668,8 @@ function initUpdateUi() {
       checkUpdateBtn.disabled = true;
       setUpdateStatus('Проверка обновлений...', 'checking');
       try {
-        const result = await window.api.checkForUpdates();
-        if (!result?.success) {
-          const message =
-            result?.error === 'Auto updates work only in packaged builds'
-              ? 'Автообновления работают только в установленной версии'
-              : result?.error || 'Не удалось проверить обновления';
-          setUpdateStatus(message, 'error');
-          toast(message, result?.rateLimited ? 'warning' : 'error', result?.rateLimited ? 6500 : 4000);
-        }
+        const result = await window.api.checkForUpdates({ manual: true });
+        applyUpdateCheckResult(result);
       } catch (e) {
         setUpdateStatus('Ошибка проверки обновлений', 'error');
         toast('Ошибка проверки обновлений: ' + e.message, 'error');
@@ -564,22 +679,54 @@ function initUpdateUi() {
     });
   }
 
+  if (downloadUpdateBtn) {
+    downloadUpdateBtn.addEventListener('click', async () => {
+      const url = manualUpdateUrl || RELEASES_PAGE;
+      try {
+        if (window.api.openExternal) {
+          const res = await window.api.openExternal(url);
+          if (res && res.success === false) throw new Error(res.error || 'не удалось открыть ссылку');
+        } else {
+          window.open(url, '_blank');
+        }
+        toast('Открыта страница загрузки', 'info', 2500);
+      } catch (e) {
+        toast('Не удалось открыть ссылку: ' + e.message, 'error');
+      }
+    });
+  }
+
   if (installUpdateBtn) {
     installUpdateBtn.addEventListener('click', async () => {
       if (!window.api.quitAndInstall) return;
       setUpdateStatus('Перезапуск для установки...', 'downloaded');
-      await window.api.quitAndInstall();
+      try {
+        const res = await window.api.quitAndInstall();
+        if (res && res.success === false) {
+          setUpdateStatus('Не удалось запустить установку: ' + (res.error || 'неизвестная ошибка'), 'error');
+          toast('Не удалось запустить установку обновления', 'error');
+        }
+      } catch (e) {
+        setUpdateStatus('Ошибка установки обновления', 'error');
+        toast('Ошибка установки: ' + e.message, 'error');
+      }
     });
   }
 
   if (!window.updater) return;
 
-  window.updater.onUpdateStatus?.((data) => {
-    setUpdateStatus(formatUpdateStatus(data), data.status || 'idle');
+  window.updater.onUpdateStatus?.((data = {}) => {
+    setUpdateStatus(formatUpdateStatus(data), data.status || 'idle', data.message || '');
+    if (data.fallback) {
+      showUpdateDownloadButton(data.fallback.downloadUrl || data.fallback.pageUrl);
+    } else if (['available', 'downloading', 'downloaded', 'current', 'checking'].includes(data.status)) {
+      hideUpdateDownloadButton();
+    }
   });
 
   window.updater.onUpdateAvailable?.((event, info) => {
     const version = info?.version ? ` ${info.version}` : '';
+    hideUpdateDownloadButton();
     setUpdateStatus(`Доступно обновление${version}. Скачиваю...`, 'available');
     toast(`Доступно обновление${version}`, 'info', 4000);
   });
@@ -589,24 +736,60 @@ function initUpdateUi() {
   });
 
   window.updater.onUpdateDownloaded?.(() => {
+    hideUpdateDownloadButton();
     setUpdateStatus('Обновление загружено', 'downloaded');
     if (installUpdateBtn) installUpdateBtn.style.display = 'inline-flex';
     toast('Обновление загружено. Нажмите "Установить".', 'success', 6000);
   });
 
   window.updater.onUpdateNotAvailable?.(() => {
+    hideUpdateDownloadButton();
     setUpdateStatus('Установлена последняя версия', 'current');
   });
 
   window.updater.onUpdateError?.((data) => {
+    // Не затираем подсказку «скачайте вручную», если она уже показана.
+    if (manualUpdateUrl) return;
     setUpdateStatus(data?.message || 'Ошибка обновления', 'error');
   });
+
+  // Синхронизация с главным процессом: события обновлений, отправленные до
+  // готовности интерфейса, в renderer не попадают.
+  if (window.api.getUpdateStatus) {
+    window.api
+      .getUpdateStatus()
+      .then((status) => {
+        if (!status) return;
+        setUpdateStatus(formatUpdateStatus(status), status.status || 'idle', status.message || '');
+        if (status.fallback) showUpdateDownloadButton(status.fallback.downloadUrl || status.fallback.pageUrl);
+        if (status.status === 'downloaded' && installUpdateBtn) installUpdateBtn.style.display = 'inline-flex';
+      })
+      .catch(() => {});
+  }
 }
 
 // ================== Умное сохранение ==================
 let saveTimeout = null;
 let saveScheduled = false;
 let lastSavedJson = ''; // Для проверки реальных изменений
+
+// Данные, которые реально уходят на диск. Результаты последнего запуска
+// (activeCollection.results) после перезапуска нигде не показываются, но
+// занимали больше половины файла, поэтому на диск они не попадают.
+function buildPersistedData() {
+  const persisted = {};
+  Object.keys(data).forEach((key) => {
+    if (key.startsWith('__')) return;
+    persisted[key] = data[key];
+  });
+  persisted.collections = (data.collections || []).map((collection) => {
+    if (!collection || !Array.isArray(collection.results)) return collection;
+    const copy = { ...collection };
+    delete copy.results;
+    return copy;
+  });
+  return persisted;
+}
 
 const debouncedSave = () => {
   // Если уже запланировано сохранение — не дублируем
@@ -624,8 +807,10 @@ const debouncedSave = () => {
 
 const doSave = async () => {
   try {
+    ensurePlatformsShape();
+    normalizeScriptPresets();
     // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Проверяем, изменились ли данные
-    const currentJson = JSON.stringify(data);
+    const currentJson = JSON.stringify(buildPersistedData());
     if (currentJson === lastSavedJson) {
       // Данные не изменились — ничего не сохраняем
       saveScheduled = false;
@@ -634,11 +819,6 @@ const doSave = async () => {
 
     await saveData();
     lastSavedJson = currentJson;
-
-    // Track collection edit
-    if (activeCollection && activeCollection.id) {
-      window.api.updateRecentCollection(activeCollection.id, 'edited');
-    }
   } catch (e) {
     console.error('Save error:', e);
     toast('Ошибка сохранения: ' + e.message, 'error');
@@ -653,7 +833,7 @@ const forceSave = async () => {
   saveScheduled = false;
   try {
     await saveData();
-    lastSavedJson = JSON.stringify(data);
+    lastSavedJson = JSON.stringify(buildPersistedData());
   } catch (e) {
     toast('Ошибка сохранения: ' + e.message, 'error');
   }
@@ -709,16 +889,6 @@ sidebarToggleBtn.addEventListener('click', () => {
 });
 
 // ================== Modals ==================
-function setupModalClose() {
-  document.querySelectorAll('.modal').forEach((m) => {
-    m.addEventListener('click', (e) => {
-      if (e.target === m) {
-        /* Overlay disabled */
-      }
-    });
-  });
-}
-document.addEventListener('DOMContentLoaded', setupModalClose);
 closeDetailModalBtn.addEventListener('click', () => {
   detailModal.classList.remove('active');
   detailModal.style.zIndex = '';
@@ -931,41 +1101,64 @@ function refreshActiveEnvironmentStats() {
   updateEnvironmentSelector();
 }
 
+// {{platform}} хранится как обычная ENV-переменная со списком допустимых значений.
+// Селектор платформы показывает именно её, иначе кнопки Add/Del писали в
+// legacy-массив platforms, который тут же мигрировал и исчезал из выпадающего списка.
+function getPlatformEnvVariable(env, options = {}) {
+  if (!env) return null;
+  ensureEnvironmentShape(env);
+  let variable = env.variables.find((item) => item.key === 'platform');
+  // Новое окружение не содержит platform-переменной, пока пользователь сам её
+  // не добавит; для кнопки Add создаём её на месте.
+  if (!variable && options.create) {
+    variable = { key: 'platform', value: '', enabled: true, options: [] };
+    env.variables.push(variable);
+  }
+  return variable || null;
+}
+
 function updatePlatformSelector() {
   if (!platformSelect) return;
-  ensurePlatformsShape();
   const env = getActiveEnvironmentRecord();
+  const platformVar = getPlatformEnvVariable(env);
+  const values = platformVar
+    ? [...new Set([platformVar.value, ...(platformVar.options || [])].map((v) => (v == null ? '' : String(v))).filter(Boolean))]
+    : [];
+
   platformSelect.innerHTML = env ? '<option value="">No Platform</option>' : '<option value="">Select environment first</option>';
   platformSelect.disabled = !env;
   if (addPlatformBtn) addPlatformBtn.disabled = !env;
-  if (deletePlatformBtn) deletePlatformBtn.disabled = !env || !env.activePlatformId;
+  if (deletePlatformBtn) deletePlatformBtn.disabled = !env || !platformVar?.value;
   if (!env) return;
-  env.platforms.forEach((platform) => {
+
+  values.forEach((value) => {
     const option = document.createElement('option');
-    option.value = platform.id;
-    option.textContent = platform.name === platform.value ? platform.value : `${platform.name} (${platform.value})`;
+    option.value = value;
+    option.textContent = value;
     platformSelect.appendChild(option);
   });
-  platformSelect.value = env.activePlatformId || '';
-  if (deletePlatformBtn) deletePlatformBtn.disabled = !env.activePlatformId;
+  platformSelect.value = platformVar?.value || '';
 }
 
 environmentSelect.addEventListener('change', () => {
   data.activeEnvironmentId = environmentSelect.value || null;
   updatePlatformSelector();
-  saveData();
+  debouncedSave();
   renderRightPanel();
-  toast(`Окружение: ${environmentSelect.options[environmentSelect.selectedIndex].text}`, 'info', 1500);
+  const selected = environmentSelect.options[environmentSelect.selectedIndex];
+  toast(`Окружение: ${selected ? selected.text : 'No Environment'}`, 'info', 1500);
 });
 
 if (platformSelect)
   platformSelect.addEventListener('change', () => {
     const env = getActiveEnvironmentRecord();
     if (!env) return;
-    env.activePlatformId = platformSelect.value || '';
-    saveData();
-    const platform = getActivePlatform();
-    toast(platform ? `Platform: ${platform.value}` : 'Platform disabled', 'info', 1500);
+    const platformVar = getPlatformEnvVariable(env);
+    if (!platformVar) return;
+    platformVar.value = platformSelect.value || '';
+    debouncedSave();
+    refreshActiveEnvironmentStats();
+    toast(platformVar.value ? `Platform: ${platformVar.value}` : 'Platform disabled', 'info', 1500);
   });
 
 if (addPlatformBtn)
@@ -978,38 +1171,40 @@ if (addPlatformBtn)
     const value = await showInputModal('Platform host prefix', '', 'ekb, msk, spb...');
     const platformValue = (value || '').trim();
     if (!platformValue) return;
-    ensurePlatformsShape();
-    const existing = env.platforms.find((platform) => platform.value.toLowerCase() === platformValue.toLowerCase());
-    if (existing) {
-      env.activePlatformId = existing.id;
-      updatePlatformSelector();
-      saveData();
-      toast(`Platform: ${existing.value}`, 'info', 1500);
+
+    const platformVar = getPlatformEnvVariable(env, { create: true });
+    if (!platformVar) {
+      toast('Не удалось создать переменную platform', 'error');
       return;
     }
-    const platform = { id: generateUniqueId(), name: platformValue, value: platformValue };
-    env.platforms.push(platform);
-    env.activePlatformId = platform.id;
+    const options = Array.isArray(platformVar.options) ? platformVar.options : [];
+    const existingOption = options.find((option) => String(option).toLowerCase() === platformValue.toLowerCase());
+    if (!existingOption) platformVar.options = [...options, platformValue];
+    platformVar.value = existingOption || platformValue;
+    platformVar.enabled = true;
     updatePlatformSelector();
-    saveData();
-    toast(`Added platform: ${platform.value}`, 'success');
+    renderRightPanel();
+    debouncedSave();
+    toast(`Added platform: ${platformVar.value}`, 'success');
   });
 
 if (deletePlatformBtn)
   deletePlatformBtn.addEventListener('click', async () => {
     const env = getActiveEnvironmentRecord();
-    const platform = getActivePlatform();
-    if (!env || !platform) {
+    const platformVar = getPlatformEnvVariable(env);
+    if (!env || !platformVar || !platformVar.value) {
       toast('Select platform first', 'warning');
       return;
     }
-    if (!(await confirmDialog('Delete platform', `Delete platform "${platform.value}" from "${env.name}"?`))) return;
-    env.platforms = env.platforms.filter((item) => item.id !== platform.id);
-    env.activePlatformId = '';
+    const value = platformVar.value;
+    if (!(await confirmDialog('Delete platform', `Delete platform "${value}" from "${env.name}"?`))) return;
+    const options = (platformVar.options || []).filter((option) => String(option) !== String(value));
+    platformVar.options = options;
+    platformVar.value = options[0] || '';
     updatePlatformSelector();
     renderRightPanel();
-    saveData();
-    toast(`Deleted platform: ${platform.value}`, 'success');
+    debouncedSave();
+    toast(`Deleted platform: ${value}`, 'success');
   });
 
 // Right Panel
@@ -1064,7 +1259,10 @@ function renderRightPanel() {
     envVarsContainer.appendChild(empty);
   }
 
-  env.variables.forEach((v, idx) => {
+  // Обращаемся к самому объекту переменной, а не к индексу: панель
+  // перерисовывается, и сохранённые индексы устаревают (правка уезжала
+  // в чужую переменную или падала после удаления строки).
+  env.variables.forEach((v) => {
     const row = document.createElement('div');
     row.className = `env-var-row${v.enabled === false ? ' disabled' : ''}`;
     const enabled = document.createElement('input');
@@ -1073,8 +1271,8 @@ function renderRightPanel() {
     enabled.checked = v.enabled !== false;
     enabled.title = 'Включить переменную';
     enabled.onchange = () => {
-      env.variables[idx].enabled = enabled.checked;
-      saveData();
+      v.enabled = enabled.checked;
+      debouncedSave();
       renderRightPanel();
       updateEnvironmentSelector();
     };
@@ -1082,14 +1280,17 @@ function renderRightPanel() {
     kIn.className = 'env-var-key';
     kIn.placeholder = 'Ключ';
     kIn.value = v.key || '';
-    kIn.addEventListener(
-      'input',
-      debounce(() => {
-        env.variables[idx].key = kIn.value.trim();
-        saveData();
-        refreshActiveEnvironmentStats();
-      }, 300),
-    );
+    // Значение пишем в данные сразу, а сохраняем с задержкой: иначе при
+    // перерисовке панели (например, при удалении другой переменной) поле
+    // показывало старое значение, хотя на диск уже ушло новое.
+    const persistKey = debounce(() => {
+      debouncedSave();
+      refreshActiveEnvironmentStats();
+    }, 300);
+    kIn.addEventListener('input', () => {
+      v.key = kIn.value.trim();
+      persistKey();
+    });
     let vIn;
     const options = Array.isArray(v.options) ? v.options : [];
     if (options.length) {
@@ -1108,33 +1309,35 @@ function renderRightPanel() {
     vIn.className = 'env-var-value';
     vIn.placeholder = 'Значение';
     vIn.value = v.value || '';
-    const saveValue = debounce(() => {
-      env.variables[idx].value = vIn.value;
-      saveData();
+    const persistValue = debounce(() => {
+      debouncedSave();
       if (options.length) refreshActiveEnvironmentStats();
     }, 300);
-    vIn.addEventListener(options.length ? 'change' : 'input', saveValue);
+    vIn.addEventListener(options.length ? 'change' : 'input', () => {
+      v.value = vIn.value;
+      persistValue();
+    });
     const copy = makeEnvActionButton('Copy', `Скопировать {{${v.key || 'key'}}}`, () => {
-      if (!env.variables[idx].key) {
+      if (!v.key) {
         toast('Сначала заполните ключ', 'warning');
         return;
       }
-      copyToClipboard(`{{${env.variables[idx].key}}}`, 'Плейсхолдер скопирован');
+      copyToClipboard(`{{${v.key}}}`, 'Плейсхолдер скопирован');
     });
     copy.className = 'env-var-copy';
     const list = makeEnvActionButton('Options', 'Allowed values', async () => {
-      const current = (env.variables[idx].options || []).join(', ');
+      const current = (v.options || []).join(', ');
       const raw = await showInputModal('Allowed values', current, 'ekb, msk, spb');
       if (raw === null) return;
       const nextOptions = raw
         .split(/[,\n]/)
         .map((value) => value.trim())
         .filter(Boolean);
-      env.variables[idx].options = [...new Set(nextOptions)];
-      if (env.variables[idx].options.length && !env.variables[idx].options.includes(env.variables[idx].value)) {
-        env.variables[idx].value = env.variables[idx].options[0];
+      v.options = [...new Set(nextOptions)];
+      if (v.options.length && !v.options.includes(v.value)) {
+        v.value = v.options[0];
       }
-      saveData();
+      debouncedSave();
       renderRightPanel();
       refreshActiveEnvironmentStats();
     });
@@ -1149,9 +1352,10 @@ function renderRightPanel() {
     rm.textContent = 'Del';
     rm.title = 'Удалить переменную';
     rm.onclick = async () => {
-      const key = env.variables[idx].key || 'без названия';
+      const key = v.key || 'без названия';
       if (!(await confirmDialog('Удалить переменную', `Удалить переменную "${key}" из окружения "${env.name}"?`))) return;
-      env.variables.splice(idx, 1);
+      const pos = env.variables.indexOf(v);
+      if (pos !== -1) env.variables.splice(pos, 1);
       saveData();
       renderRightPanel();
       updateEnvironmentSelector();
@@ -1214,6 +1418,7 @@ function createEnvironmentFromInput() {
     newEnvNameInput.value = '';
     renderEnvList();
     updateEnvironmentSelector();
+    updatePlatformSelector();
     renderRightPanel();
     envManagerModal.classList.remove('active');
     rightPanel.classList.remove('hidden');
@@ -1254,6 +1459,7 @@ function renderEnvList() {
       saveData().then(() => {
         renderRightPanel();
         updateEnvironmentSelector();
+        updatePlatformSelector();
         renderEnvList();
         rightPanel.classList.remove('hidden');
         toast(`Выбрано: ${env.name}`, 'success');
@@ -1286,6 +1492,7 @@ function renderEnvList() {
       data.activeEnvironmentId = copy.id;
       saveData().then(() => {
         updateEnvironmentSelector();
+        updatePlatformSelector();
         renderEnvList();
         renderRightPanel();
         rightPanel.classList.remove('hidden');
@@ -1312,6 +1519,7 @@ function renderEnvList() {
           saveData().then(() => {
             renderEnvList();
             updateEnvironmentSelector();
+            updatePlatformSelector();
             renderRightPanel();
           });
         }
@@ -1589,7 +1797,7 @@ if (runScriptLabBtn) {
         getScriptLabCode(),
         scriptLabData.value,
         getActiveEnvironment(),
-        Number(scriptLabTimeout.value) || 10000,
+        clampScriptTimeout(scriptLabTimeout.value, 10000),
       );
       if (result.environment) applyRuntimeEnvironmentValues(result.environment);
       const output = {
@@ -1878,6 +2086,10 @@ function renderTree() {
     });
   }
 }
+// Перерисовка дерева — самая дорогая операция в интерфейсе (сотни узлов),
+// поэтому из обработчиков ввода её вызываем с задержкой.
+const debouncedTreeRender = debounce(() => renderTree(), 250);
+
 function renderSearchResults() {
   const allCollections = data.collections || [];
   const folders = data.folders || [];
@@ -1935,6 +2147,9 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
       searchQuery = '';
       searchInput.value = '';
       expandParentsOf(col.id);
+      // После сброса поиска нужно снова показать полное дерево, иначе в нём
+      // остаются только результаты поиска, а подсветка не находит элемент.
+      renderTree();
       saveData().then(() => {
         selectCollection(col.id);
         setTimeout(() => {
@@ -1984,6 +2199,7 @@ function renderCollectionItemWithFolder(col, container, folderPath) {
     const n = await showInputModal('Новое название', col.name);
     if (n) {
       col.name = n;
+      updateOpenTabName(col);
       await saveData();
       renderTree();
       if (activeCollectionId === col.id) collectionNameInput.value = col.name;
@@ -2048,6 +2264,7 @@ function renderCollectionItem(col, container, lvl) {
     const n = await showInputModal('Новое название', col.name);
     if (n) {
       col.name = n;
+      updateOpenTabName(col);
       await saveData();
       renderTree();
       if (activeCollectionId === col.id) collectionNameInput.value = col.name;
@@ -2080,11 +2297,21 @@ async function moveFolderToFolder(fid, pid) {
 }
 function cleanupEmptyCollection(cid) {
   const c = data.collections.find((x) => x.id === cid);
-  if (!c) return;
+  if (!c) return false;
   if (!c.steps?.length && (!c.name || c.name === 'Новая коллекция') && !c.results?.length) {
     data.collections = data.collections.filter((x) => x.id !== cid);
     saveData();
+    return true;
   }
+  return false;
+}
+
+// Переключение вкладки не должно перестраивать всё дерево (сотни DOM-узлов
+// с обработчиками): достаточно переключить подсветку активного элемента.
+function updateActiveTreeHighlight() {
+  treeContainer.querySelectorAll('.collection-item').forEach((el) => {
+    el.classList.toggle('active', el.dataset.collectionId === activeCollectionId);
+  });
 }
 function expandParentsOf(collectionId) {
   const col = data.collections.find((c) => c.id === collectionId);
@@ -2101,9 +2328,7 @@ function expandParentsOf(collectionId) {
 }
 
 function clampOpenTabsLimit(value) {
-  const n = Number.parseInt(value, 10);
-  if (!Number.isFinite(n)) return DEFAULT_OPEN_TABS_LIMIT;
-  return Math.min(MAX_OPEN_TABS_LIMIT, Math.max(MIN_OPEN_TABS_LIMIT, n));
+  return clampInt(value, MIN_OPEN_TABS_LIMIT, MAX_OPEN_TABS_LIMIT, DEFAULT_OPEN_TABS_LIMIT);
 }
 
 function readOpenTabsLimit() {
@@ -2115,7 +2340,11 @@ function setOpenTabsLimit(value) {
   localStorage.setItem(OPEN_TABS_LIMIT_KEY, String(openTabsLimit));
   if (workspaceTabsLimitInput) workspaceTabsLimitInput.value = String(openTabsLimit);
   limitOpenTabs();
+  // limitOpenTabs меняет только массив вкладок — синхронизируем сохранённое состояние,
+  // иначе на диск уходил список длиннее нового лимита.
+  syncOpenTabsState();
   renderTabs();
+  debouncedSave();
 }
 
 function limitOpenTabs() {
@@ -2153,9 +2382,18 @@ function restoreOpenTabsState() {
   syncOpenTabsState();
 }
 
+// Переименование коллекции в дереве должно обновлять и её вкладку.
+function updateOpenTabName(collection) {
+  const tab = openTabs.find((item) => item.id === collection.id);
+  if (!tab) return;
+  tab.name = collection.name;
+  syncOpenTabsState();
+  renderTabs();
+}
+
 function selectCollection(id) {
   const prev = activeCollectionId;
-  if (prev && prev !== id) cleanupEmptyCollection(prev);
+  const removedPrevious = prev && prev !== id ? cleanupEmptyCollection(prev) : false;
   activeCollectionId = id;
   activeCollection = data.collections.find((c) => c.id === id);
   if (!activeCollection) return;
@@ -2167,13 +2405,66 @@ function selectCollection(id) {
   limitOpenTabs();
   syncOpenTabsState();
 
-  // Track collection view
-  window.api.updateRecentCollection(activeCollection.id, 'viewed');
+  // Track collection view (ошибки трекинга не должны ломать открытие)
+  try {
+    Promise.resolve(window.api.updateRecentCollection(activeCollection.id, 'viewed')).catch(() => {});
+  } catch {
+    /* трекинг не критичен */
+  }
 
   renderCollectionEditor();
   renderTabs();
-  renderTree();
+  if (removedPrevious) renderTree();
+  else updateActiveTreeHighlight();
   debouncedSave();
+}
+
+// ================== Drag & drop вкладок ==================
+// Вкладку можно перетащить влево/вправо: порядок сохраняется вместе с открытыми
+// запросами (data.openTabs) и восстанавливается при следующем запуске.
+function isBeforeTabCenter(event, element) {
+  const rect = element.getBoundingClientRect();
+  if (!rect.width) return true;
+  return event.clientX < rect.left + rect.width / 2;
+}
+
+function setTabDropIndicator(target, before) {
+  collectionTabsEl.querySelectorAll('.tab-item').forEach((el) => {
+    el.classList.toggle('drag-before', el === target && before);
+    el.classList.toggle('drag-after', el === target && !before);
+  });
+}
+
+function clearTabDragStyles() {
+  draggingTabId = null;
+  collectionTabsEl.querySelectorAll('.tab-item').forEach((el) => {
+    el.classList.remove('dragging', 'drag-before', 'drag-after');
+  });
+}
+
+function reorderTabs(id, targetId, insertBefore) {
+  const next = moveTab(openTabs, id, targetId, insertBefore);
+  if (next === openTabs) return;
+  openTabs = next;
+  syncOpenTabsState();
+  renderTabs();
+  debouncedSave();
+}
+
+if (collectionTabsEl) {
+  // Бросок на пустое место полосы — вкладка уезжает в конец.
+  collectionTabsEl.addEventListener('dragover', (e) => {
+    if (!draggingTabId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  });
+  collectionTabsEl.addEventListener('drop', (e) => {
+    if (!draggingTabId) return;
+    e.preventDefault();
+    const draggedId = draggingTabId;
+    clearTabDragStyles();
+    reorderTabs(draggedId, null, false);
+  });
 }
 
 function renderTabs() {
@@ -2195,8 +2486,10 @@ function renderTabs() {
   openTabs.forEach((tab) => {
     const tabEl = document.createElement('div');
     tabEl.className = `tab-item${activeCollectionId === tab.id ? ' active' : ''}`;
+    tabEl.dataset.tabId = tab.id;
+    tabEl.draggable = true;
+    tabEl.title = `${tab.name || 'Без названия'} (перетащите, чтобы изменить порядок)`;
     tabEl.addEventListener('click', () => selectCollection(tab.id));
-    tabEl.title = tab.name || 'Без названия';
     tabEl.addEventListener('mousedown', (e) => {
       if (e.button === 1) e.preventDefault();
     });
@@ -2206,6 +2499,34 @@ function renderTabs() {
         closeTab(tab.id);
       }
     });
+    tabEl.addEventListener('dragstart', (e) => {
+      draggingTabId = tab.id;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', 'tab:' + tab.id);
+      }
+      tabEl.classList.add('dragging');
+    });
+    tabEl.addEventListener('dragover', (e) => {
+      if (!draggingTabId || draggingTabId === tab.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      setTabDropIndicator(tabEl, isBeforeTabCenter(e, tabEl));
+    });
+    tabEl.addEventListener('dragleave', () => {
+      tabEl.classList.remove('drag-before', 'drag-after');
+    });
+    tabEl.addEventListener('drop', (e) => {
+      if (!draggingTabId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedId = draggingTabId;
+      const insertBefore = isBeforeTabCenter(e, tabEl);
+      clearTabDragStyles();
+      reorderTabs(draggedId, tab.id, insertBefore);
+    });
+    tabEl.addEventListener('dragend', clearTabDragStyles);
 
     const nameEl = document.createElement('span');
     nameEl.className = 'tab-name';
@@ -2280,7 +2601,7 @@ return response.data;`
       : String(collection.script.code);
   collection.script.data =
     collection.script.data == null || collection.script.data === 'undefined' ? '{}' : String(collection.script.data);
-  collection.script.timeout = Number(collection.script.timeout) || 10000;
+  collection.script.timeout = clampScriptTimeout(collection.script.timeout, 10000);
   return collection.script;
 }
 
@@ -2368,7 +2689,7 @@ function renderScriptCollectionEditor() {
   const persistScript = debounce(() => {
     script.code = codeEditor ? codeEditor.getValue() : codeTextarea.value;
     script.data = dataTextarea.value;
-    script.timeout = Number(timeoutInput.value) || 10000;
+    script.timeout = clampScriptTimeout(timeoutInput.value, 10000);
     debouncedSave();
   }, 250);
 
@@ -2389,7 +2710,7 @@ function renderScriptCollectionEditor() {
     if (!window.api.runScriptLab) return;
     script.code = codeEditor ? codeEditor.getValue() : codeTextarea.value;
     script.data = dataTextarea.value;
-    script.timeout = Number(timeoutInput.value) || 10000;
+    script.timeout = clampScriptTimeout(timeoutInput.value, 10000);
     await saveData();
     runBtn.disabled = true;
     output.textContent = 'Выполнение...';
@@ -2431,7 +2752,7 @@ function renderCollectionEditor() {
     renderTabs();
 
     debouncedSave();
-    renderTree();
+    debouncedTreeRender();
   };
   runnerResultsBody.innerHTML = '';
   progressEl.innerHTML = '';
@@ -2680,7 +3001,7 @@ function createStepCard(step, idx) {
   );
   tbc.headers.appendChild(dl);
 
-  const renderHR = (hd, i) => {
+  const renderHR = (hd) => {
     const tr = document.createElement('tr');
     tr.className = 'header-row' + (hd.enabled ? '' : ' disabled');
 
@@ -2732,7 +3053,10 @@ function createStepCard(step, idx) {
     rm.textContent = '✕';
     rm.title = 'Удалить';
     rm.onclick = () => {
-      step.customHeaders.splice(i, 1);
+      // Ищем по объекту, а не по сохранённому индексу: после удаления
+      // предыдущих строк индексы в замыканиях устаревают.
+      const pos = step.customHeaders.indexOf(hd);
+      if (pos !== -1) step.customHeaders.splice(pos, 1);
       tr.style.opacity = '0';
       tr.style.transform = 'translateX(10px)';
       tr.style.transition = 'all 0.2s';
@@ -2746,7 +3070,7 @@ function createStepCard(step, idx) {
     tbody.appendChild(tr);
   };
 
-  step.customHeaders.forEach((h, i) => renderHR(h, i));
+  step.customHeaders.forEach((h) => renderHR(h));
 
   const addH = document.createElement('button');
   addH.className = 'add-header-btn';
@@ -2754,7 +3078,7 @@ function createStepCard(step, idx) {
   addH.onclick = () => {
     const nh = { key: '', value: '', enabled: true };
     step.customHeaders.push(nh);
-    renderHR(nh, step.customHeaders.length - 1);
+    renderHR(nh);
     debouncedSave();
   };
   tbc.headers.append(ht, addH);
@@ -2989,10 +3313,12 @@ function createStepCard(step, idx) {
         authFormContainer.appendChild(hawkInfo);
         break;
     }
-    debouncedSave();
   };
 
-  authTypeSelect.addEventListener('change', renderAuthForm);
+  authTypeSelect.addEventListener('change', () => {
+    renderAuthForm();
+    debouncedSave();
+  });
   renderAuthForm();
   tbc.auth.appendChild(authContainer);
 
@@ -3047,7 +3373,7 @@ function createStepCard(step, idx) {
     if (!script || typeof script !== 'object' || Array.isArray(script)) return { code: '', timeout: 5000 };
     const rawCode = script.code;
     const code = rawCode == null || rawCode === 'undefined' ? '' : String(rawCode);
-    return { ...script, code, timeout: script.timeout || 5000 };
+    return { ...script, code, timeout: clampScriptTimeout(script.timeout) };
   };
 
   step.scripts = {
@@ -3253,7 +3579,7 @@ function createStepCard(step, idx) {
     const tBody = document.createElement('tbody');
     table.appendChild(tBody);
 
-    const renderRow = (item, i) => {
+    const renderRow = (item) => {
       const tr = document.createElement('tr');
       tr.className = 'kv-row' + (item.enabled ? '' : ' disabled');
 
@@ -3332,7 +3658,7 @@ function createStepCard(step, idx) {
           item.type = sel.value;
           debouncedSave();
           tBody.innerHTML = '';
-          arr.forEach((it, idx) => renderRow(it, idx));
+          arr.forEach((it) => renderRow(it));
         };
         tdT.appendChild(sel);
         tr.appendChild(tdT);
@@ -3344,7 +3670,10 @@ function createStepCard(step, idx) {
       rm.className = 'kv-remove-btn';
       rm.textContent = '✕';
       rm.onclick = () => {
-        arr.splice(i, 1);
+        // Поиск по объекту: индексы, захваченные при рендере, устаревают
+        // после удаления предыдущих строк.
+        const pos = arr.indexOf(item);
+        if (pos !== -1) arr.splice(pos, 1);
         tr.style.opacity = '0';
         setTimeout(() => {
           tr.remove();
@@ -3356,7 +3685,7 @@ function createStepCard(step, idx) {
       tBody.appendChild(tr);
     };
 
-    arr.forEach((item, i) => renderRow(item, i));
+    arr.forEach((item) => renderRow(item));
 
     const addBtn = document.createElement('button');
     addBtn.className = 'add-kv-btn';
@@ -3366,7 +3695,7 @@ function createStepCard(step, idx) {
         ? { key: '', value: '', type: 'text', enabled: true }
         : { key: '', value: '', enabled: true };
       arr.push(newItem);
-      renderRow(newItem, arr.length - 1);
+      renderRow(newItem);
       debouncedSave();
     };
 
@@ -3655,8 +3984,6 @@ function createStepCard(step, idx) {
         break;
       }
     }
-
-    debouncedSave();
   };
 
   renderBodyForm();
@@ -3690,6 +4017,14 @@ const formatTime = (ms) => {
 };
 
 let runnerAutoHideTimer = null;
+// Прогресс-события идут отдельным каналом IPC и могут прийти уже после ответа
+// run-collection — тогда они затирали итоговую сводку.
+let runnerRunActive = false;
+
+// Ограничения на объём результатов: раньше они копились без предела и
+// раздували data-файл (в реальных данных — половина 48 МБ).
+const MAX_STORED_RESULTS = 200;
+const MAX_RUNNER_ROWS = 500;
 
 function showContextRunner() {
   if (runnerAutoHideTimer) {
@@ -3736,11 +4071,22 @@ runCollectionBtn.addEventListener('click', async () => {
     toast('Ошибка файла: ' + e.message, 'error');
     return;
   }
+  // Проверяем задержку до запуска: иначе опечатка вида 1e21 незаметно
+  // превращалась в «зависший» запуск (раньше parseInt вообще давал 1 мс).
+  const rawDelay = Number(delayInput.value);
+  if (Number.isFinite(rawDelay) && rawDelay > MAX_DELAY_MS) {
+    toast(`Слишком большая задержка: максимум ${Math.round(MAX_DELAY_MS / 60000)} мин`, 'error', 5000);
+    return;
+  }
+  const delay = clampDelay(delayInput.value);
+  if (String(rawDelay) !== String(delay) && delayInput.value !== '') {
+    // Отрицательные и дробные значения приводим к нормальному виду.
+    delayInput.value = String(delay);
+  }
   if (stopCollectionBtn) {
     stopCollectionBtn.style.display = 'flex';
     runCollectionBtn.style.display = 'none';
   }
-  const delay = parseInt(delayInput.value, 10) || 0;
   if (!activeCollection.results) activeCollection.results = [];
   else activeCollection.results.length = 0;
   showContextRunner();
@@ -3748,6 +4094,7 @@ runCollectionBtn.addEventListener('click', async () => {
   progressEl.innerHTML =
     '<div style="color: var(--accent); font-style: italic; padding: 8px 0;">⏳ Запуск и выполнение запросов...</div>';
   let runSucceeded = false;
+  runnerRunActive = true;
   try {
     const result = await window.api.runCollection(
       activeCollection.steps,
@@ -3755,10 +4102,27 @@ runCollectionBtn.addEventListener('click', async () => {
       delay,
       activeCollection.name,
       getActiveEnvironment(),
+      activeCollection.id,
     );
+    // Ответ main может обогнать последнее progress-событие: даём очереди
+    // доехать, иначе последняя строка терялась, а сводка перезаписывалась.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Ответ получен — поздние progress-события больше не должны перерисовывать панель.
+    runnerRunActive = false;
     applyRuntimeEnvironmentValues(result.environment);
-    runSucceeded = true;
-    progressEl.innerHTML = `
+    if (!result.success) {
+      // Запуск прерван script (pm.abort) или ошибкой валидации в главном процессе.
+      const reason = result.error || (result.cancelled ? 'Выполнение остановлено' : 'Запуск не выполнен');
+      progressEl.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--warning); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--warning); margin-top: 12px;">
+                <div style="font-weight: 700; color: var(--text-primary); font-size: 15px;">⏹ ${escapeHtml(reason)}</div>
+                <div style="color: var(--text-primary);">Выполнено запросов: ${result.totalExecuted ?? 0} за ${formatTime(result.totalTime || 0)}</div>
+            </div>
+        `;
+      toast(reason, 'warning', 5000);
+    } else {
+      runSucceeded = true;
+      progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--success-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--success); margin-top: 12px;">
                 <div style="font-weight: 700; color: var(--success); font-size: 15px; display: flex; align-items: center; gap: 8px;">✅ Выполнение завершено!</div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
@@ -3777,8 +4141,10 @@ runCollectionBtn.addEventListener('click', async () => {
                 </div>
             </div>
         `;
-    toast('Коллекция выполнена', 'success');
+      toast('Коллекция выполнена', 'success');
+    }
   } catch (e) {
+    runnerRunActive = false;
     progressEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; background: var(--error-bg); padding: 16px; border-radius: var(--radius-md); border-left: 4px solid var(--danger); margin-top: 12px;">
                 <div style="font-weight: 700; color: var(--danger); font-size: 15px;">❌ Критическая ошибка выполнения</div>
@@ -3830,6 +4196,9 @@ if (window.api.onStop) {
 }
 
 window.api.onProgress((progressData) => {
+  // Итог запуска уже показан — запоздавшие события прогресса игнорируем,
+  // иначе они затирали сводку «Выполнение завершено».
+  if (!runnerRunActive) return;
   if (progressData.environment) applyRuntimeEnvironmentValues(progressData.environment);
   const {
     item,
@@ -3873,6 +4242,11 @@ window.api.onProgress((progressData) => {
   td4.style.fontSize = '12px';
   row.appendChild(td4);
   runnerResultsBody.appendChild(row);
+  // Держим в DOM только последние строки, иначе многотысячный запуск
+  // превращает таблицу в тормозящую страницу.
+  while (runnerResultsBody.children.length > MAX_RUNNER_ROWS) {
+    runnerResultsBody.removeChild(runnerResultsBody.firstElementChild);
+  }
   if (activeCollection) {
     if (!activeCollection.results) activeCollection.results = [];
     activeCollection.results.push({
@@ -3888,6 +4262,9 @@ window.api.onProgress((progressData) => {
       requestHeaders: row.dataset.requestHeaders,
       requestDuration,
     });
+    if (activeCollection.results.length > MAX_STORED_RESULTS) {
+      activeCollection.results.splice(0, activeCollection.results.length - MAX_STORED_RESULTS);
+    }
   }
   row.addEventListener('dblclick', () => showResponseDetails(row));
   const progressPercent = Math.round((requestNumber / totalRequests) * 100);
@@ -3954,58 +4331,6 @@ function extractVariables(step) {
     else if (Array.isArray(value)) value.forEach(scanJsonValue);
     else if (value && typeof value === 'object') Object.values(value).forEach(scanJsonValue);
   };
-  const stripJsonComments = (str) => {
-    let result = '';
-    let inString = false;
-    let stringChar = '';
-    let inLineComment = false;
-    let inBlockComment = false;
-    for (let i = 0; i < str.length; i++) {
-      const c = str[i];
-      const next = str[i + 1];
-      if (inLineComment) {
-        if (c === '\n') {
-          inLineComment = false;
-          result += c;
-        }
-        continue;
-      }
-      if (inBlockComment) {
-        if (c === '*' && next === '/') {
-          inBlockComment = false;
-          i++;
-        }
-        continue;
-      }
-      if (inString) {
-        result += c;
-        if (c === '\\' && i + 1 < str.length) {
-          result += str[++i];
-          continue;
-        }
-        if (c === stringChar) inString = false;
-        continue;
-      }
-      if (c === '"' || c === "'") {
-        inString = true;
-        stringChar = c;
-        result += c;
-        continue;
-      }
-      if (c === '/' && next === '/') {
-        inLineComment = true;
-        i++;
-        continue;
-      }
-      if (c === '/' && next === '*') {
-        inBlockComment = true;
-        i++;
-        continue;
-      }
-      result += c;
-    }
-    return result;
-  };
   scanString(step.url);
   scanString(step.auth);
   if (Array.isArray(step.customHeaders)) {
@@ -4017,7 +4342,7 @@ function extractVariables(step) {
     });
   }
   if (step.body && typeof step.body === 'string') {
-    const cleanedBody = stripJsonComments(step.body).trim();
+    const cleanedBody = stripJsonCommentsForFormat(step.body).trim();
     try {
       const parsed = JSON.parse(cleanedBody);
       scanJsonValue(parsed);
@@ -4107,16 +4432,10 @@ function updateRawJsonFromInputs() {
   const obj = {};
   dataContainer.querySelectorAll('.send-var-input').forEach((input) => {
     const name = input.dataset.varName;
-    const val = input.value;
-    if (name) {
-      if (val === '') obj[name] = '';
-      else if (/^-?\d+$/.test(val)) obj[name] = parseInt(val, 10);
-      else if (/^-?\d+\.\d+$/.test(val)) obj[name] = parseFloat(val);
-      else if (val === 'true') obj[name] = true;
-      else if (val === 'false') obj[name] = false;
-      else if (val === 'null') obj[name] = null;
-      else obj[name] = val;
-    }
+    if (!name) return;
+    // Тот же безопасный разбор, что и в JSON Generator: длинные ID
+    // (00677045499780734996) остаются строками, а не теряют точность.
+    obj[name] = parseJsonValue(input.value);
   });
   testDataInput.value = JSON.stringify(obj, null, 2);
 }
@@ -4160,6 +4479,7 @@ sendSingleBtn.addEventListener('click', async () => {
       activeCollection?.name || '',
       getActiveEnvironment(),
       activeCollection?.steps || [],
+      activeCollection?.id,
     );
     applyRuntimeEnvironmentValues(res.environment);
     sendSingleBtn.disabled = false;
@@ -4233,19 +4553,27 @@ async function loadHistory() {
   historyPageState.loading = true;
   historyPageState.page = 1;
   historyTableBody.innerHTML = '<tr><td colspan="7">Загрузка истории...</td></tr>';
-  const selectedCollection = getHistoryFilterValue(historyFilter);
-  const result = await window.api.getHistory({
-    page: historyPageState.page,
-    pageSize: historyPageState.pageSize,
-    filters: { collection: selectedCollection },
-  });
-  updateHistoryFilterOptions(historyFilter, result.collections, selectedCollection);
-  historyTableBody.innerHTML = '';
-  appendHistoryRows(historyTableBody, result.entries);
-  historyPageState.total = result.total;
-  historyPageState.hasMore = result.hasMore;
-  historyPageState.loading = false;
-  renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
+  try {
+    const selectedCollection = getHistoryFilterValue(historyFilter);
+    const result = await window.api.getHistory({
+      page: historyPageState.page,
+      pageSize: historyPageState.pageSize,
+      filters: { collection: selectedCollection },
+    });
+    updateHistoryFilterOptions(historyFilter, result.collections, selectedCollection);
+    historyTableBody.innerHTML = '';
+    appendHistoryRows(historyTableBody, result.entries);
+    historyPageState.total = result.total;
+    historyPageState.hasMore = result.hasMore;
+    renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
+  } catch (e) {
+    console.error('History load error:', e);
+    historyTableBody.innerHTML = '<tr><td colspan="7">Не удалось загрузить историю</td></tr>';
+    toast('Ошибка загрузки истории: ' + e.message, 'error');
+  } finally {
+    // Раньше при ошибке флаг оставался true и вкладка истории больше не обновлялась.
+    historyPageState.loading = false;
+  }
 }
 
 async function loadMoreHistory() {
@@ -4253,16 +4581,22 @@ async function loadMoreHistory() {
   historyPageState.loading = true;
   historyPageState.page += 1;
   historyTableBody.querySelector('.history-load-more-row')?.remove();
-  const result = await window.api.getHistory({
-    page: historyPageState.page,
-    pageSize: historyPageState.pageSize,
-    filters: { collection: getHistoryFilterValue(historyFilter) },
-  });
-  appendHistoryRows(historyTableBody, result.entries);
-  historyPageState.total = result.total;
-  historyPageState.hasMore = result.hasMore;
-  historyPageState.loading = false;
-  renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
+  try {
+    const result = await window.api.getHistory({
+      page: historyPageState.page,
+      pageSize: historyPageState.pageSize,
+      filters: { collection: getHistoryFilterValue(historyFilter) },
+    });
+    appendHistoryRows(historyTableBody, result.entries);
+    historyPageState.total = result.total;
+    historyPageState.hasMore = result.hasMore;
+    renderHistoryLoadMore(historyTableBody, historyPageState, loadMoreHistory);
+  } catch (e) {
+    console.error('History load-more error:', e);
+    toast('Ошибка загрузки истории: ' + e.message, 'error');
+  } finally {
+    historyPageState.loading = false;
+  }
 }
 
 function createHistoryRow(e) {
@@ -4422,23 +4756,27 @@ async function loadGlobalHistory() {
   globalHistoryPageState.loading = true;
   globalHistoryPageState.page = 1;
   globalHistoryTableBody.innerHTML = '<tr><td colspan="7">Загрузка истории...</td></tr>';
-  const selectedCollection = getHistoryFilterValue(globalHistoryFilter);
-  const result = await window.api.getHistory({
-    page: globalHistoryPageState.page,
-    pageSize: globalHistoryPageState.pageSize,
-    filters: { collection: selectedCollection },
-  });
-  if (token !== globalHistoryRenderToken) {
+  try {
+    const selectedCollection = getHistoryFilterValue(globalHistoryFilter);
+    const result = await window.api.getHistory({
+      page: globalHistoryPageState.page,
+      pageSize: globalHistoryPageState.pageSize,
+      filters: { collection: selectedCollection },
+    });
+    if (token !== globalHistoryRenderToken) return;
+    updateHistoryFilterOptions(globalHistoryFilter, result.collections, selectedCollection);
+    globalHistoryTableBody.innerHTML = '';
+    appendHistoryRows(globalHistoryTableBody, result.entries);
+    globalHistoryPageState.total = result.total;
+    globalHistoryPageState.hasMore = result.hasMore;
+    renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
+  } catch (e) {
+    console.error('Global history load error:', e);
+    globalHistoryTableBody.innerHTML = '<tr><td colspan="7">Не удалось загрузить историю</td></tr>';
+    toast('Ошибка загрузки истории: ' + e.message, 'error');
+  } finally {
     globalHistoryPageState.loading = false;
-    return;
   }
-  updateHistoryFilterOptions(globalHistoryFilter, result.collections, selectedCollection);
-  globalHistoryTableBody.innerHTML = '';
-  appendHistoryRows(globalHistoryTableBody, result.entries);
-  globalHistoryPageState.total = result.total;
-  globalHistoryPageState.hasMore = result.hasMore;
-  globalHistoryPageState.loading = false;
-  renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
 }
 
 async function loadMoreGlobalHistory() {
@@ -4446,16 +4784,22 @@ async function loadMoreGlobalHistory() {
   globalHistoryPageState.loading = true;
   globalHistoryPageState.page += 1;
   globalHistoryTableBody.querySelector('.history-load-more-row')?.remove();
-  const result = await window.api.getHistory({
-    page: globalHistoryPageState.page,
-    pageSize: globalHistoryPageState.pageSize,
-    filters: { collection: getHistoryFilterValue(globalHistoryFilter) },
-  });
-  appendHistoryRows(globalHistoryTableBody, result.entries);
-  globalHistoryPageState.total = result.total;
-  globalHistoryPageState.hasMore = result.hasMore;
-  globalHistoryPageState.loading = false;
-  renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
+  try {
+    const result = await window.api.getHistory({
+      page: globalHistoryPageState.page,
+      pageSize: globalHistoryPageState.pageSize,
+      filters: { collection: getHistoryFilterValue(globalHistoryFilter) },
+    });
+    appendHistoryRows(globalHistoryTableBody, result.entries);
+    globalHistoryPageState.total = result.total;
+    globalHistoryPageState.hasMore = result.hasMore;
+    renderHistoryLoadMore(globalHistoryTableBody, globalHistoryPageState, loadMoreGlobalHistory);
+  } catch (e) {
+    console.error('Global history load-more error:', e);
+    toast('Ошибка загрузки истории: ' + e.message, 'error');
+  } finally {
+    globalHistoryPageState.loading = false;
+  }
 }
 globalHistoryFilter.addEventListener('change', loadGlobalHistory);
 if (refreshGlobalHistoryBtn) refreshGlobalHistoryBtn.addEventListener('click', loadGlobalHistory);
@@ -4493,17 +4837,22 @@ if (clearGlobalHistoryFilterBtn)
 });
 async function updateClearHistoryPreview() {
   clearHistoryPreview.textContent = '...';
-  const result = await window.api.getHistory({
-    page: 1,
-    pageSize: 0,
-    filters: {
-      time: clearHistoryTimeFilter.value,
-      type: clearHistoryTypeFilter.value,
-      method: clearHistoryMethodFilter.value,
-      status: clearHistoryStatusFilter.value,
-    },
-  });
-  clearHistoryPreview.textContent = result.total;
+  try {
+    const result = await window.api.getHistory({
+      page: 1,
+      pageSize: 0,
+      filters: {
+        time: clearHistoryTimeFilter.value,
+        type: clearHistoryTypeFilter.value,
+        method: clearHistoryMethodFilter.value,
+        status: clearHistoryStatusFilter.value,
+      },
+    });
+    clearHistoryPreview.textContent = result.total;
+  } catch (e) {
+    console.error('Clear history preview error:', e);
+    clearHistoryPreview.textContent = '?';
+  }
 }
 if (applyClearHistoryBtn)
   applyClearHistoryBtn.addEventListener('click', async () => {
@@ -4523,13 +4872,12 @@ if (applyClearHistoryBtn)
   });
 
 // ================== JSON Generator ==================
-if (jsonGeneratorBtn) {
-  jsonGeneratorBtn.addEventListener('click', () => {
-    jsonModal.classList.add('active');
-    if (fieldsContainer.children.length === 0) {
-      addFieldBtn.click();
-    }
-  });
+// В разметке нет кнопки с id=jsonGeneratorBtn (она осталась от старой версии):
+// генератор открывается из меню и из пустого состояния, поэтому открытие
+// вынесено в общую функцию, которая сразу добавляет первое поле.
+function openJsonGenerator() {
+  jsonModal.classList.add('active');
+  if (fieldsContainer.children.length === 0) addFieldBtn.click();
 }
 
 if (closeModalBtn) {
@@ -4652,8 +5000,7 @@ if (generateJsonBtn) {
 if (copyJsonBtn) {
   copyJsonBtn.addEventListener('click', () => {
     if (window.generatedJson) {
-      navigator.clipboard.writeText(window.generatedJson);
-      toast('JSON скопирован в буфер обмена', 'success');
+      copyToClipboard(window.generatedJson, 'JSON скопирован в буфер обмена');
     }
   });
 }
@@ -4671,8 +5018,17 @@ if (sendJsonToRunnerBtn) {
 }
 
 if (saveJsonBtn) {
-  saveJsonBtn.addEventListener('click', () => {
-    if (window.generatedJson) {
+  saveJsonBtn.addEventListener('click', async () => {
+    if (!window.generatedJson) return;
+    // Скачивание через Blob в Electron с file:// часто молча не срабатывает,
+    // поэтому используем нативный диалог сохранения.
+    try {
+      if (window.api?.saveFile) {
+        const res = await window.api.saveFile(window.generatedJson, 'generated-data.json');
+        if (res?.success) toast('Файл сохранен', 'success');
+        else if (!res?.cancelled) toast('Не удалось сохранить файл', 'error');
+        return;
+      }
       const blob = new Blob([window.generatedJson], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4681,10 +5037,82 @@ if (saveJsonBtn) {
       a.click();
       URL.revokeObjectURL(url);
       toast('Файл сохранен', 'success');
+    } catch (e) {
+      toast('Ошибка сохранения: ' + e.message, 'error');
     }
   });
 }
 // ================== cURL Import ==================
+// Переносит распознанный cURL в шаг. Заголовки обязаны остаться массивом
+// (раньше сюда попадал объект через spread массива — данные заголовков
+// превращались в мусор), а Authorization — реально применяться.
+function applyCurlToStep(step, parsed) {
+  const headers = { ...(parsed.headers || {}) };
+  const findHeader = (name) => {
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+    return key ? { key, value: headers[key] } : null;
+  };
+
+  const contentType = findHeader('Content-Type');
+  const authorization = findHeader('Authorization');
+  if (contentType) delete headers[contentType.key];
+  if (authorization) delete headers[authorization.key];
+
+  step.url = parsed.url || step.url || '';
+  step.method = parsed.method || step.method || 'GET';
+
+  if (contentType) step.contentType = contentType.value;
+  else if (!step.contentType) step.contentType = 'application/json';
+
+  if (!Array.isArray(step.customHeaders)) step.customHeaders = [];
+  Object.entries(headers).forEach(([key, value]) => {
+    if (!key) return;
+    const existing = step.customHeaders.find(
+      (h) => (h.key || '').toLowerCase() === key.toLowerCase(),
+    );
+    if (existing) existing.value = value;
+    else step.customHeaders.push({ key, value, enabled: true });
+  });
+
+  if (authorization) {
+    const bearer = /^bearer\s+(.+)$/i.exec(authorization.value.trim());
+    if (bearer) {
+      step.authType = 'bearer';
+      step.authData = { ...(step.authData || {}), token: bearer[1] };
+      step.auth = '';
+    } else {
+      const existing = step.customHeaders.find((h) => (h.key || '').toLowerCase() === 'authorization');
+      if (existing) existing.value = authorization.value;
+      else step.customHeaders.push({ key: authorization.key, value: authorization.value, enabled: true });
+    }
+  }
+
+  if (parsed.body) {
+    // Иначе тело из cURL игнорировалось, если у шага был тип body "None".
+    step.body = parsed.body;
+    step.bodyType = 'raw';
+    const looksJson = /^[[{]/.test(parsed.body.trim());
+    let rawType = null;
+    if (looksJson) {
+      try {
+        JSON.parse(parsed.body);
+        rawType = 'json';
+        step.contentType = step.contentType || 'application/json';
+      } catch {
+        rawType = step.rawType || 'json';
+      }
+    } else {
+      const ct = (contentType?.value || '').toLowerCase();
+      if (ct.includes('json')) rawType = 'json';
+      else if (ct.includes('xml')) rawType = 'xml';
+      else if (ct.includes('html')) rawType = 'html';
+      else if (ct.includes('javascript')) rawType = 'javascript';
+      else if (ct.includes('text')) rawType = 'text';
+    }
+    step.rawType = rawType || step.rawType || 'text';
+  }
+}
+
 function importStepFromCurl(step, idx) {
   curlInput.value = '';
   curlModal.classList.add('active');
@@ -4704,14 +5132,7 @@ if (parseCurlBtn)
     }
     if (window._curlTarget) {
       const { step } = window._curlTarget;
-      step.url = p.url;
-      step.method = p.method;
-      step.contentType = p.headers['Content-Type'] || step.contentType || 'application/json';
-      step.auth = p.headers['Authorization'] || step.auth || '';
-      step.body = p.body || step.body || '';
-      delete p.headers['Authorization'];
-      delete p.headers['Content-Type'];
-      step.customHeaders = { ...step.customHeaders, ...p.headers };
+      applyCurlToStep(step, p);
       window._curlTarget = null;
       saveData();
       renderSteps();
@@ -4722,18 +5143,16 @@ if (parseCurlBtn)
     const ns = {
       id: generateStepId(),
       name: '',
-      url: p.url,
-      method: p.method,
-      contentType: p.headers['Content-Type'] || 'application/json',
-      auth: p.headers['Authorization'] || '',
-      body: p.body || '',
-      customHeaders: {},
+      url: '',
+      method: 'GET',
+      contentType: 'application/json',
+      auth: '',
+      body: '',
+      customHeaders: [],
       documentation: '',
       activeTab: 'body',
     };
-    delete p.headers['Authorization'];
-    delete p.headers['Content-Type'];
-    ns.customHeaders = p.headers;
+    applyCurlToStep(ns, p);
     activeCollection.steps.push(ns);
     saveData();
     renderSteps();
@@ -4898,6 +5317,9 @@ async function loadData() {
     renderRightPanel();
     if (activeCollection) renderCollectionEditor();
     else showEmptyState();
+    // Запоминаем состояние сразу после загрузки: иначе первый же автосейв
+    // перезаписывал многомегабайтный файл без реальных изменений.
+    lastSavedJson = JSON.stringify(buildPersistedData());
   } catch (e) {
     console.error('❌ Ошибка загрузки данных:', e);
     data.__loadFailed = true;
@@ -4906,11 +5328,6 @@ async function loadData() {
   }
 }
 async function saveData() {
-  console.log('💾 Сохранение данных:', {
-    folders: data.folders?.length,
-    collections: data.collections?.length,
-    environments: data.environments?.length,
-  });
   if (!data.environments) {
     console.error('⚠️ ВНИМАНИЕ: data.environments отсутствует!');
     data.environments = [];
@@ -4922,35 +5339,316 @@ async function saveData() {
   }
   ensurePlatformsShape();
   normalizeScriptPresets();
-  await window.api.saveData(data);
+  const persisted = buildPersistedData();
+  await window.api.saveData(persisted);
+  lastSavedJson = JSON.stringify(persisted);
 }
 
-// Shortcuts
-document.addEventListener('keydown', async (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    await forceSave();
-    toast('Сохранено', 'success', 1500);
-  }
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.modal.active').forEach((m) => {
-      m.classList.remove('active');
-      m.style.zIndex = '';
-    });
-    currentStepForSend = null;
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && sendRequestModal.classList.contains('active'))
+// ================== Горячие клавиши ==================
+// Открывает окно отправки для шага, в котором находится курсор (или для первого).
+function openSendModalForFocusedStep() {
+  if (!activeCollection || !Array.isArray(activeCollection.steps) || activeCollection.steps.length === 0) return false;
+  if (isScriptCollection(activeCollection)) return false;
+  const focusedCard = document.activeElement?.closest?.('.step-card');
+  const card = focusedCard || stepsContainer.querySelector('.step-card');
+  const index = Number(card?.dataset?.index);
+  const step = Number.isInteger(index) ? activeCollection.steps[index] : activeCollection.steps[0];
+  if (!step) return false;
+  openSendModal(step);
+  return true;
+}
+
+function hotkeySend() {
+  if (sendRequestModal.classList.contains('active')) {
     sendSingleBtn.click();
-  if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-    e.preventDefault();
-    newRootCollectionBtn.click();
+    return;
   }
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
-    e.preventDefault();
-    searchInput.focus();
-    searchInput.select();
+  if (anyOverlayOpen()) return;
+  if (!openSendModalForFocusedStep()) {
+    toast('Откройте запрос или коллекцию с шагами', 'warning', 2200);
   }
-});
+}
+
+function anyOverlayOpen() {
+  return Boolean(document.querySelector('.modal.active, .confirm-dialog, .runner-data-drawer.active'));
+}
+
+function activateTabByIndex(index) {
+  const tab = openTabs[index];
+  if (tab) selectCollection(tab.id);
+}
+
+function cycleTab(direction) {
+  if (openTabs.length < 2) return;
+  const current = openTabs.findIndex((t) => t.id === activeCollectionId);
+  const next = openTabs[(current + direction + openTabs.length) % openTabs.length];
+  if (next) selectCollection(next.id);
+}
+
+function closeActiveRequestTab() {
+  if (!activeCollectionId) {
+    toast('Нет открытого запроса', 'warning', 1500);
+    return;
+  }
+  closeTab(activeCollectionId);
+}
+
+function focusStepUrlInput() {
+  if (!activeCollection || isScriptCollection(activeCollection)) {
+    toast('Откройте коллекцию с шагами', 'warning', 1500);
+    return;
+  }
+  const focusedCard = document.activeElement?.closest?.('.step-card');
+  const card = focusedCard || stepsContainer.querySelector('.step-card');
+  const input = card?.querySelector('.step-url');
+  if (!input) {
+    toast('В коллекции нет шагов', 'warning', 1500);
+    return;
+  }
+  input.focus();
+  if (typeof input.select === 'function') input.select();
+}
+
+const IS_MAC = isMacPlatform(navigator.platform || navigator.userAgent || '');
+
+// Один реестр для обработчика и для окна «Горячие клавиши»: список в интерфейсе
+// не разъедется с реальными сочетаниями.
+const HOTKEYS = [
+  {
+    combo: 'Mod+Enter',
+    group: 'Запросы',
+    label: 'Открыть окно Send / отправить запрос',
+    allowInModal: true,
+    run: hotkeySend,
+  },
+  {
+    combo: 'Mod+Shift+Enter',
+    group: 'Запросы',
+    label: 'Запустить коллекцию в Runner',
+    run: () => runCollectionBtn.click(),
+  },
+  {
+    combo: 'Mod+L',
+    group: 'Запросы',
+    label: 'Перейти к полю URL запроса',
+    run: focusStepUrlInput,
+  },
+  {
+    combo: 'Mod+N',
+    group: 'Коллекции',
+    label: 'Создать коллекцию',
+    run: () => newRootCollectionBtn.click(),
+  },
+  {
+    combo: 'Mod+Shift+N',
+    group: 'Коллекции',
+    label: 'Создать папку',
+    run: () => newFolderBtn.click(),
+  },
+  {
+    combo: 'Mod+Shift+T',
+    group: 'Коллекции',
+    label: 'Добавить шаг в открытую коллекцию',
+    run: () => addStepBtn.click(),
+  },
+  {
+    combo: 'Mod+S',
+    group: 'Файл',
+    label: 'Сохранить данные',
+    allowInModal: true,
+    run: async () => {
+      await forceSave();
+      toast('Сохранено', 'success', 1500);
+    },
+  },
+  {
+    combo: 'Mod+W',
+    group: 'Вкладки',
+    label: 'Закрыть текущую вкладку запроса',
+    run: closeActiveRequestTab,
+  },
+  {
+    combo: 'Mod+Tab',
+    group: 'Вкладки',
+    label: 'Следующая вкладка',
+    run: () => cycleTab(1),
+  },
+  {
+    combo: 'Mod+Shift+Tab',
+    group: 'Вкладки',
+    label: 'Предыдущая вкладка',
+    run: () => cycleTab(-1),
+  },
+  {
+    combo: 'Mod+Shift+F',
+    group: 'Поиск и данные',
+    label: 'Поиск по коллекциям',
+    run: () => {
+      searchInput.focus();
+      searchInput.select();
+    },
+  },
+  {
+    combo: 'Mod+Shift+H',
+    group: 'Поиск и данные',
+    label: 'Глобальная история',
+    run: () => globalHistoryBtn?.click(),
+  },
+  {
+    combo: 'Mod+Shift+G',
+    group: 'Поиск и данные',
+    label: 'Генератор JSON',
+    run: () => openJsonGenerator(),
+  },
+  {
+    combo: 'Mod+Shift+E',
+    group: 'Поиск и данные',
+    label: 'Менеджер окружений',
+    run: () => manageEnvBtnGlobal?.click(),
+  },
+  {
+    combo: 'F1',
+    group: 'Интерфейс',
+    label: 'Показать / скрыть список горячих клавиш',
+    allowInModal: true,
+    run: () => toggleHotkeysModal(),
+  },
+];
+
+// Дополнительные строки для окна подсказки (обрабатываются отдельно).
+const EXTRA_HOTKEY_HELP = [
+  { group: 'Вкладки', label: 'Перейти к вкладке по номеру', combo: 'Mod+1…9' },
+  { group: 'Интерфейс', label: 'Закрыть окно или меню', combo: 'Esc' },
+];
+
+function renderHotkeysList() {
+  if (!hotkeysList) return;
+  hotkeysList.innerHTML = '';
+  const rows = [
+    ...HOTKEYS.filter((hotkey) => hotkey.showInHelp !== false).map((hotkey) => ({
+      group: hotkey.group || 'Прочее',
+      label: hotkey.label,
+      combo: hotkey.combo,
+    })),
+    ...EXTRA_HOTKEY_HELP,
+  ];
+
+  const groups = new Map();
+  rows.forEach((row) => {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  });
+
+  groups.forEach((items, groupName) => {
+    const section = document.createElement('div');
+    section.className = 'hotkeys-group';
+    section.appendChild(txt('div', groupName, 'hotkeys-group-title'));
+
+    items.forEach((item) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'hotkey-row';
+      rowEl.appendChild(txt('span', item.label, 'hotkey-label'));
+
+      const keys = document.createElement('span');
+      keys.className = 'hotkey-keys';
+      item.combo.split('+').forEach((part) => {
+        const kbd = document.createElement('kbd');
+        kbd.className = 'hotkey-key';
+        kbd.textContent = formatCombo(part, IS_MAC);
+        keys.appendChild(kbd);
+      });
+      rowEl.appendChild(keys);
+      section.appendChild(rowEl);
+    });
+
+    hotkeysList.appendChild(section);
+  });
+}
+
+function openHotkeysModal() {
+  if (!hotkeysModal) return;
+  renderHotkeysList();
+  hotkeysModal.classList.add('active');
+}
+
+function closeHotkeysModal() {
+  hotkeysModal?.classList.remove('active');
+}
+
+function toggleHotkeysModal() {
+  if (!hotkeysModal) return;
+  if (hotkeysModal.classList.contains('active')) closeHotkeysModal();
+  else openHotkeysModal();
+}
+
+if (hotkeysBtn)
+  hotkeysBtn.addEventListener('click', () => {
+    closeSidebarFunctionMenus();
+    openHotkeysModal();
+  });
+if (closeHotkeysModalBtn) closeHotkeysModalBtn.addEventListener('click', closeHotkeysModal);
+// Пункт меню Electron "Помощь → Горячие клавиши"
+if (window.api?.onShowHotkeys) window.api.onShowHotkeys(() => openHotkeysModal());
+
+function topActiveModal() {
+  const modals = Array.from(document.querySelectorAll('.modal.active'));
+  if (modals.length === 0) return null;
+  const zIndexOf = (modal) => {
+    const z = Number(window.getComputedStyle(modal).zIndex);
+    return Number.isFinite(z) ? z : 0;
+  };
+  return modals.reduce((top, modal) => (zIndexOf(modal) >= zIndexOf(top) ? modal : top), modals[0]);
+}
+
+function handleEscape() {
+  // Закрываем верхнее окно (последнее открытое), а не все сразу.
+  const activeModal = topActiveModal();
+  if (activeModal) {
+    activeModal.classList.remove('active');
+    activeModal.style.zIndex = '';
+    currentStepForSend = null;
+    return;
+  }
+  // Диалог подтверждения сам завершает свой промис по Esc.
+  if (document.querySelector('.confirm-dialog')) return;
+  closeSidebarFunctionMenus();
+}
+
+document.addEventListener(
+  'keydown',
+  async (e) => {
+    if (e.defaultPrevented || e.isComposing) return;
+    const combo = comboFromEvent(e);
+    if (!combo) return;
+
+    if (combo === 'Escape') {
+      handleEscape();
+      return;
+    }
+
+    // Ctrl/Cmd+1…9 — переключение открытых вкладок по номеру.
+    const tabIndex = comboToTabIndex(combo);
+    if (tabIndex !== null) {
+      if (anyOverlayOpen()) return;
+      e.preventDefault();
+      activateTabByIndex(tabIndex);
+      return;
+    }
+
+    const hotkey = findHotkey(HOTKEYS, combo);
+    if (!hotkey) return;
+    if (anyOverlayOpen() && !hotkey.allowInModal) return;
+
+    e.preventDefault();
+    try {
+      await hotkey.run(e);
+    } catch (err) {
+      console.error('Hotkey error:', combo, err);
+      toast('Ошибка выполнения: ' + err.message, 'error');
+    }
+  },
+  true,
+);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.method-dropdown') && !e.target.closest('.import-dropdown'))
     document.querySelectorAll('.method-dropdown.open').forEach((d) => d.classList.remove('open'));
@@ -4967,10 +5665,10 @@ const ePost = document.getElementById('emptyStateImportPostmanBtn');
 if (gJson)
   gJson.addEventListener('click', () => {
     closeSidebarFunctionMenus();
-    jsonModal.classList.add('active');
+    openJsonGenerator();
   });
 if (eNew) eNew.addEventListener('click', () => newRootCollectionBtn.click());
-if (eJson) eJson.addEventListener('click', () => jsonModal.classList.add('active'));
+if (eJson) eJson.addEventListener('click', () => openJsonGenerator());
 if (ePost)
   ePost.addEventListener('click', async () => {
     const files = await window.api.openPostmanDialog();
@@ -4986,7 +5684,9 @@ const zIndexObs = new MutationObserver((mutations) => {
         let maxZ = 1000;
         document.querySelectorAll('.modal.active').forEach((mm) => {
           if (mm !== el) {
-            const z = parseInt(window.getComputedStyle(mm).zIndex) || 1000;
+            // zIndex может быть 'auto': такие значения считаем базовыми.
+            const rawZ = window.getComputedStyle(mm).zIndex;
+            const z = rawZ && rawZ !== 'auto' ? clampInt(rawZ, 0, Number.MAX_SAFE_INTEGER, 1000) : 1000;
             if (z > maxZ) maxZ = z;
           }
         });

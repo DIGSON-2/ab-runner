@@ -75,6 +75,42 @@ export function setPinned(tabs, id, pinned) {
 }
 
 /**
+ * Move a tab next to another one (drag & drop reordering).
+ * `targetId` may be null/'' to move the tab to the end of the strip.
+ * Returns a new array; returns the input array unchanged when the move is a no-op.
+ * @param {OpenTab[]} tabs
+ * @param {string} id - tab being dragged
+ * @param {string|null} targetId - tab to insert next to
+ * @param {boolean} [insertBefore=true] - insert before or after the target
+ * @returns {OpenTab[]}
+ */
+export function moveTab(tabs, id, targetId, insertBefore = true) {
+  if (!Array.isArray(tabs) || !id) return tabs;
+  if (targetId && targetId === id) return tabs;
+  const from = tabs.findIndex((t) => t.id === id);
+  if (from === -1) return tabs;
+
+  if (targetId && targetId !== id) {
+    const targetExists = tabs.some((t) => t.id === targetId);
+    if (!targetExists) return tabs;
+  }
+
+  const dragged = tabs[from];
+  const without = tabs.filter((t) => t.id !== id);
+
+  let insertAt = without.length;
+  if (targetId && targetId !== id) {
+    const targetIndex = without.findIndex((t) => t.id === targetId);
+    insertAt = insertBefore ? targetIndex : targetIndex + 1;
+  }
+
+  const next = [...without];
+  next.splice(insertAt, 0, dragged);
+  if (next.every((tab, index) => tab === tabs[index])) return tabs;
+  return next;
+}
+
+/**
  * Drop tabs whose collection no longer exists.
  * @param {OpenTab[]} tabs
  * @param {(id: string) => boolean} exists

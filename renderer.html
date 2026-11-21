@@ -64,6 +64,7 @@
                 <div id="updateStatus" class="update-status">Обновления: не проверялись</div>
                 <div class="update-actions">
                     <button id="checkUpdateBtn" class="secondary">Проверить</button>
+                    <button id="downloadUpdateBtn" class="secondary" style="display: none;">Скачать</button>
                     <button id="installUpdateBtn" style="display: none;">Установить</button>
                 </div>
             </div>
@@ -114,6 +115,7 @@
                     <button id="newFolderBtn" title="Создать папку">📁 Папка</button>
                     <button id="newRootCollectionBtn" title="Создать запрос">＋ Запрос</button>
                     <button id="scriptLabBtn" title="Создать script-запрос">⚙ Script</button>
+                    <button id="hotkeysBtn" title="Горячие клавиши (F1)">⌨ Клавиши</button>
 
                     <div class="data-dropdown">
                         <button id="appDataBtn">💾 Данные</button>
@@ -481,6 +483,18 @@ return response.data;</textarea>
                 <button id="closeCurlModalBtn" class="secondary">Отмена</button>
                 <button id="parseCurlBtn">Создать шаг</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Модалка: Горячие клавиши -->
+    <div id="hotkeysModal" class="modal">
+        <div class="modal-content hotkeys-modal">
+            <div class="modal-sticky-header">
+                <h3 class="modal-header">⌨ Горячие клавиши</h3>
+                <button id="closeHotkeysModalBtn" class="modal-close-icon" title="Закрыть">✕</button>
+            </div>
+            <p class="modal-description">На macOS вместо Ctrl используется Cmd (⌘). F1 открывает и закрывает этот список.</p>
+            <div id="hotkeysList" class="hotkeys-list"></div>
         </div>
     </div>
 

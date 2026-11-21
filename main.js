@@ -1,16 +1,91 @@
 // main.js – полная финальная версия со Splash Screen, автообновлениями и всеми типами Auth/Body
-const { app, BrowserWindow, ipcMain, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeTheme, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const { autoUpdater } = require('electron-updater');
-const FormData = require('form-data');
-const { repairJsonText } = require('./src/shared/strings');
 const { replacePlaceholders } = require('./src/shared/placeholders');
-const { buildHeaders } = require('./src/shared/auth');
-const { executeScript } = require('./src/shared/scriptRunner');
+const { executeScript, classifyScriptResult } = require('./src/shared/scriptRunner');
+const { emptyAppData, normalizeAppData, prepareDataForDisk } = require('./src/shared/appData');
+const { waitForDelay } = require('./src/shared/wait');
+const { clampInt, clampDelay, clampScriptTimeout } = require('./src/shared/numbers');
+const { compareVersions } = require('./src/shared/version');
+const {
+  serializeRequestBody,
+  buildStepRequestState,
+  buildStepScriptRequestState,
+  finalizeStepRequestState,
+  applyRequestStatePlaceholders,
+} = require('./src/shared/requestState');
 
 app.commandLine.appendSwitch('disable-http2');
+
+// ================== Startup compatibility (Chromium sandbox) ==================
+// На части Windows-машин (RDP, виртуальные адаптеры, ограниченные окружения)
+// дочерние процессы Chromium падают с 0x80000003, и приложение закрывается:
+//   GPU process isn't usable. Goodbye.
+//   Renderer process crashed
+// В этом случае включаем режим совместимости: Chromium sandbox отключается.
+// В собранном приложении он включается автоматически после падения при запуске
+// и запоминается в userData; отключить/включить принудительно можно переменными
+// AB_RUNNER_NO_SANDBOX=1 и AB_RUNNER_GPU_SANDBOX=1, сбросить память режима —
+// AB_RUNNER_RESET_COMPAT=1.
+const IS_WINDOWS = process.platform === 'win32';
+const compatConfigPath = path.join(app.getPath('userData'), 'startup-compat.json');
+const startupCrashMarkerPath = path.join(app.getPath('userData'), '.startup-crash');
+
+const sandboxForcedOn = process.env.AB_RUNNER_GPU_SANDBOX === '1';
+const sandboxForcedOff = process.env.AB_RUNNER_NO_SANDBOX === '1';
+
+if (process.env.AB_RUNNER_RESET_COMPAT === '1') {
+  try { fs.rmSync(compatConfigPath, { force: true }); } catch { /* ignore */ }
+}
+
+let startupCompat = null;
+try {
+  startupCompat = JSON.parse(fs.readFileSync(compatConfigPath, 'utf8'));
+} catch {
+  startupCompat = null;
+}
+const previousLaunchCrashed = fs.existsSync(startupCrashMarkerPath);
+// В dev-режиме (npm start) сразу используем режим совместимости: он часто
+// запускается из контейнеров/ограниченных терминалов, где sandbox не работает.
+const devNeedsCompat = !app.isPackaged && IS_WINDOWS;
+const autoCompat = IS_WINDOWS && previousLaunchCrashed && !sandboxForcedOn && !sandboxForcedOff;
+const compatEnabled =
+  IS_WINDOWS && !sandboxForcedOn && (sandboxForcedOff || devNeedsCompat || autoCompat || startupCompat?.noSandbox === true);
+
+if (compatEnabled) {
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  if (devNeedsCompat && !startupCompat?.noSandbox) {
+    console.log('Startup compatibility (dev): Chromium sandbox disabled. Set AB_RUNNER_GPU_SANDBOX=1 to enable it.');
+  } else if (autoCompat) {
+    console.warn('Startup compatibility: previous launch crashed, Chromium sandbox disabled for this run.');
+  } else if (startupCompat?.noSandbox === true) {
+    console.log('Startup compatibility: Chromium sandbox disabled (remembered from a previous launch).');
+  }
+} else if (IS_WINDOWS && !devNeedsCompat && startupCompat?.noSandbox !== true) {
+  // Маркер живёт до первого успешного показа окна: если он остался, значит
+  // прошлый запуск упал, и следующий запуск включит режим совместимости.
+  try { fs.writeFileSync(startupCrashMarkerPath, new Date().toISOString(), 'utf8'); } catch { /* ignore */ }
+}
+
+function rememberStartupSuccess() {
+  try { fs.rmSync(startupCrashMarkerPath, { force: true }); } catch { /* ignore */ }
+  // Если помогло отключение sandbox — запоминаем режим, чтобы не падать снова.
+  if (app.isPackaged && IS_WINDOWS && autoCompat) {
+    try {
+      fs.writeFileSync(
+        compatConfigPath,
+        JSON.stringify({ noSandbox: true, savedAt: new Date().toISOString() }, null, 2),
+        'utf8',
+      );
+    } catch (e) {
+      console.warn('Cannot save startup compatibility config:', e.message);
+    }
+  }
+}
 
 // Принудительно включаем темную тему для нативных меню Electron
 nativeTheme.themeSource = 'dark';
@@ -106,6 +181,9 @@ function createMainWindow() {
     mainWindow.maximize();
     mainWindow.show();
     mainWindow.focus();
+    // Окно показалось — значит запуск удался: снимаем маркер падения и, если
+    // помог режим совместимости, запоминаем его для следующих запусков.
+    rememberStartupSuccess();
   });
 
   mainWindow.on('closed', () => {
@@ -113,9 +191,76 @@ function createMainWindow() {
   });
 }
 
+// ================== Application Menu ==================
+// Своё меню вместо стандартного: стандартное вешает Ctrl+W на «Закрыть окно»,
+// а это сочетание должно закрывать вкладку запроса в renderer. Остальные
+// пункты повторяют привычное поведение (копирование, масштаб, DevTools).
+function closeFocusedWindow() {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow;
+  if (win && !win.isDestroyed()) win.close();
+}
+
+function buildApplicationMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [];
+
+  if (isMac) template.push({ role: 'appMenu' });
+  else {
+    template.push({
+      label: 'Файл',
+      submenu: [{ role: 'quit', label: 'Выход' }],
+    });
+  }
+
+  template.push({ role: 'editMenu' });
+  template.push({ role: 'viewMenu' });
+  template.push({
+    label: 'Окно',
+    submenu: [
+      { role: 'minimize' },
+      ...(isMac ? [{ role: 'zoom' }] : []),
+      { type: 'separator' },
+      { label: 'Закрыть окно', click: closeFocusedWindow },
+    ],
+  });
+  template.push({
+    label: 'Помощь',
+    submenu: [
+      { label: 'Горячие клавиши', click: () => sendToRenderer('show-hotkeys') },
+      {
+        label: 'Страница проекта',
+        click: () => shell.openExternal('https://github.com/DIGSON-2/ab-runner'),
+      },
+    ],
+  });
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // ================== Auto Updater ==================
-const UPDATE_CHECK_COOLDOWN_MS = 10 * 60 * 1000;
+// Проверки выполняются автоматически: через 10 секунд после запуска и далее
+// каждые UPDATE_CHECK_INTERVAL_MS (с разбросом, чтобы не бить GitHub синхронно).
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Ручная проверка не должна спамить GitHub: не чаще раза в минуту.
+const UPDATE_MANUAL_COOLDOWN_MS = 60 * 1000;
+// После ошибки повторяем позже (429 → растущая пауза, сеть → 10 минут).
+const UPDATE_RETRY_MIN_MS = 30 * 60 * 1000;
+const UPDATE_RETRY_MAX_MS = 3 * 60 * 60 * 1000;
+const UPDATE_RETRY_DEFAULT_MS = 10 * 60 * 1000;
+const GITHUB_OWNER = 'DIGSON-2';
+const GITHUB_REPO = 'ab-runner';
+// Переопределение адресов (зеркало GitHub API, корпоративный прокси, тесты).
+const GITHUB_RELEASES_API =
+  process.env.AB_RUNNER_RELEASES_API || `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+const RELEASES_PAGE =
+  process.env.AB_RUNNER_RELEASES_PAGE || `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+
+let lastUpdateStatus = { status: 'idle', message: 'Обновления: не проверялись' };
+let updateCheckInFlight = null;
 let lastUpdateCheckAt = 0;
+let updateRetryAt = 0;
+let updateRetryDelayMs = 0;
+let autoUpdateTimer = null;
 
 function sendUpdaterEvent(channel, payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
@@ -123,47 +268,181 @@ function sendUpdaterEvent(channel, payload = {}) {
   }
 }
 
+// Статус хранится, чтобы UI мог его запросить после перезагрузки (события,
+// отправленные до готовности renderer, иначе теряются).
+function publishUpdateStatus(status) {
+  lastUpdateStatus = { ...status, checkedAt: lastUpdateCheckAt || undefined };
+  sendUpdaterEvent('update-status', lastUpdateStatus);
+  return lastUpdateStatus;
+}
+
+function isRateLimitError(err) {
+  const message = err?.message || String(err || '');
+  return /429|too many requests|rate limit/i.test(message);
+}
+
 function formatUpdaterError(err) {
   const message = err?.message || String(err);
-  if (message.includes('429') || message.includes('Too Many Requests') || message.includes('secondary rate limit')) {
-    return 'GitHub временно ограничил проверки обновлений (429 Too Many Requests). Подождите 10-60 минут и попробуйте снова. Это не ошибка приложения.';
+  if (isRateLimitError(err)) {
+    return 'GitHub временно ограничил проверки обновлений (429 Too Many Requests). Проверка повторится автоматически позже; установщик можно скачать с GitHub Releases вручную.';
   }
-  if (message.includes('ERR_HTTP2_PROTOCOL_ERROR')) {
-    return 'Ошибка соединения с GitHub release assets (HTTP/2). В этой версии включен обход через HTTP/1.1. Если ошибка осталась, скачайте установщик вручную с GitHub Releases.';
+  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|Cannot find latest\.yml/i.test(message)) {
+    return 'В последнем релизе на GitHub нет latest.yml, поэтому автообновление недоступно. Скачайте установщик с GitHub Releases вручную.';
+  }
+  if (/ERR_HTTP2_PROTOCOL_ERROR|ERR_CONNECTION|ERR_INTERNET_DISCONNECTED|ENOTFOUND|ETIMEDOUT|timeout/i.test(message)) {
+    return 'Не удалось связаться с GitHub. Проверьте интернет или скачайте установщик вручную с GitHub Releases.';
+  }
+  if (/404/.test(message)) {
+    return 'Релиз не найден на GitHub. Скачайте установщик с GitHub Releases вручную.';
   }
   return message;
 }
 
-function getUpdateCooldownMs() {
-  if (!lastUpdateCheckAt) return 0;
-  return Math.max(0, UPDATE_CHECK_COOLDOWN_MS - (Date.now() - lastUpdateCheckAt));
+// Лёгкая проверка через API GitHub: 60 запросов/час на IP и отдельный лимит,
+// в отличие от неавторизованных HTML/atom-эндпоинтов github.com, которые
+// GitHub часто режет по secondary rate limit (429).
+async function fetchLatestReleaseFromApi() {
+  try {
+    const response = await axios.get(GITHUB_RELEASES_API, {
+      timeout: 15000,
+      validateStatus: () => true,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `AB Runner/${app.getVersion()}`,
+      },
+    });
+    if (response.status !== 200 || !response.data || typeof response.data !== 'object') {
+      console.warn('Update API check failed with status', response.status);
+      return null;
+    }
+    const tag = response.data.tag_name;
+    if (!tag) return null;
+    const assets = Array.isArray(response.data.assets) ? response.data.assets : [];
+    const installer =
+      assets.find((asset) => /setup.*\.exe$/i.test(String(asset?.name || ''))) ||
+      assets.find((asset) => /\.exe$/i.test(String(asset?.name || ''))) ||
+      null;
+    return {
+      version: String(tag).replace(/^v/i, ''),
+      tag: String(tag),
+      pageUrl: typeof response.data.html_url === 'string' ? response.data.html_url : RELEASES_PAGE,
+      downloadUrl: installer && typeof installer.browser_download_url === 'string' ? installer.browser_download_url : null,
+      notes: typeof response.data.body === 'string' ? response.data.body : '',
+    };
+  } catch (e) {
+    console.warn('Update API check failed:', e.message);
+    return null;
+  }
 }
 
-async function checkForUpdatesSafely() {
-  const cooldownMs = getUpdateCooldownMs();
-  if (cooldownMs > 0) {
-    const waitMinutes = Math.ceil(cooldownMs / 60000);
+function buildManualFallback(latest) {
+  return {
+    version: latest?.version || null,
+    pageUrl: latest?.pageUrl || RELEASES_PAGE,
+    downloadUrl: latest?.downloadUrl || null,
+  };
+}
+
+async function checkForUpdatesSafely(options = {}) {
+  const manual = options.manual !== false;
+  const now = Date.now();
+
+  if (updateCheckInFlight) {
+    return { success: false, busy: true, error: 'Проверка обновлений уже выполняется' };
+  }
+  if (manual && lastUpdateCheckAt && now - lastUpdateCheckAt < UPDATE_MANUAL_COOLDOWN_MS) {
+    return {
+      success: false,
+      cooldown: true,
+      rateLimited: true,
+      retryAfterMs: UPDATE_MANUAL_COOLDOWN_MS - (now - lastUpdateCheckAt),
+      error: 'Проверка уже выполнялась только что. Попробуйте через минуту.',
+    };
+  }
+  if (manual && updateRetryAt > now) {
+    const waitMinutes = Math.max(1, Math.ceil((updateRetryAt - now) / 60000));
     return {
       success: false,
       rateLimited: true,
-      retryAfterMs: cooldownMs,
-      error: `Проверка обновлений недавно уже запускалась. Попробуйте через ${waitMinutes} мин.`,
+      retryAfterMs: updateRetryAt - now,
+      error: `GitHub временно ограничил проверки. Автопроверка повторится позже, а можно попробовать через ${waitMinutes} мин или скачать установщик вручную.`,
+      fallback: buildManualFallback(null),
     };
   }
 
-  lastUpdateCheckAt = Date.now();
-  try {
-    const result = await autoUpdater.checkForUpdatesAndNotify();
-    return { success: true, updateInfo: result?.updateInfo || null };
-  } catch (e) {
-    console.error('Update check error:', e);
-    return { success: false, error: formatUpdaterError(e) };
-  }
+  updateCheckInFlight = (async () => {
+    publishUpdateStatus({ status: 'checking' });
+    try {
+      const latest = await fetchLatestReleaseFromApi();
+
+      // API уже знает, что обновления нет — не дёргаем нестабильные эндпоинты.
+      if (latest && compareVersions(latest.version, app.getVersion()) <= 0) {
+        lastUpdateCheckAt = Date.now();
+        updateRetryAt = 0;
+        updateRetryDelayMs = 0;
+        publishUpdateStatus({ status: 'current', version: app.getVersion(), checkedVia: 'api' });
+        return { success: true, upToDate: true, version: app.getVersion(), checkedVia: 'api' };
+      }
+
+      try {
+        // Штатный механизм нужен для загрузки и установки (latest.yml + blockmap).
+        const checkResult = await autoUpdater.checkForUpdates();
+        lastUpdateCheckAt = Date.now();
+        updateRetryAt = 0;
+        updateRetryDelayMs = 0;
+        if (checkResult?.isUpdateAvailable) {
+          return {
+            success: true,
+            updateInfo: checkResult.updateInfo,
+            latest: latest ? { version: latest.version, pageUrl: latest.pageUrl } : null,
+          };
+        }
+        // API говорит, что версия новее, а electron-updater её не увидел
+        // (например, latest.yml не загрузился в релиз).
+        if (latest) {
+          const fallback = buildManualFallback(latest);
+          publishUpdateStatus({ status: 'available-manual', version: latest.version, fallback });
+          return { success: true, manualUpdate: fallback };
+        }
+        publishUpdateStatus({ status: 'current', version: checkResult?.updateInfo?.version || app.getVersion() });
+        return { success: true, upToDate: true, version: checkResult?.updateInfo?.version || app.getVersion() };
+      } catch (e) {
+        // Печатаем только сообщение: в теле ответа GitHub приходит HTML на килобайты.
+        console.error('Update check error:', e?.message || e);
+        const message = formatUpdaterError(e);
+        updateRetryDelayMs = isRateLimitError(e)
+          ? Math.min(UPDATE_RETRY_MAX_MS, Math.max(UPDATE_RETRY_MIN_MS, updateRetryDelayMs * 2))
+          : UPDATE_RETRY_DEFAULT_MS;
+        updateRetryAt = Date.now() + updateRetryDelayMs;
+        const fallback = buildManualFallback(latest);
+        const hasNewerVersion = latest && compareVersions(latest.version, app.getVersion()) > 0;
+        publishUpdateStatus({
+          status: hasNewerVersion ? 'available-manual' : 'error',
+          version: latest?.version,
+          message,
+          fallback,
+          retryAfterMs: updateRetryDelayMs,
+        });
+        return {
+          success: false,
+          error: message,
+          retryAfterMs: updateRetryDelayMs,
+          fallback,
+          latestVersion: latest?.version || null,
+        };
+      }
+    } finally {
+      updateCheckInFlight = null;
+    }
+  })();
+
+  return await updateCheckInFlight;
 }
 
 function initAutoUpdater() {
   if (!app.isPackaged) {
     console.log('Auto updater disabled: app is not packaged');
+    publishUpdateStatus({ status: 'disabled', message: 'Автообновления работают только в установленной версии' });
     return;
   }
 
@@ -176,63 +455,126 @@ function initAutoUpdater() {
 
   autoUpdater.on('checking-for-update', () => {
     console.log('Checking for updates...');
-    sendUpdaterEvent('update-status', { status: 'checking' });
+    publishUpdateStatus({ status: 'checking' });
   });
 
   autoUpdater.on('update-available', (info) => {
     console.log('Update available:', info.version);
     sendUpdaterEvent('update-available', info);
-    sendUpdaterEvent('update-status', { status: 'available', version: info.version });
+    publishUpdateStatus({ status: 'available', version: info.version });
   });
 
   autoUpdater.on('update-not-available', (info) => {
     console.log('No updates available');
     sendUpdaterEvent('update-not-available', info);
-    sendUpdaterEvent('update-status', { status: 'current' });
+    publishUpdateStatus({ status: 'current', version: info?.version || app.getVersion() });
   });
 
   autoUpdater.on('error', (err) => {
-    console.error('Auto update error:', err);
+    // Печатаем только сообщение: при 429 тело ответа GitHub — это HTML на килобайты.
+    console.error('Auto update error:', err?.message || err);
     const message = formatUpdaterError(err);
     sendUpdaterEvent('update-error', { message });
-    sendUpdaterEvent('update-status', { status: 'error', message });
+    // Статус «ошибка» не должен затирать уже найденное ручное обновление,
+    // но при любой ошибке даём ссылку на Releases — скачать можно вручную.
+    if (lastUpdateStatus.status !== 'available-manual') {
+      publishUpdateStatus({ status: 'error', message, fallback: buildManualFallback(null) });
+    }
   });
 
   autoUpdater.on('download-progress', (progress) => {
     const percent = Math.round(progress.percent || 0);
     console.log(`Update download: ${percent}%`);
     sendUpdaterEvent('update-download-progress', { percent });
-    sendUpdaterEvent('update-status', { status: 'downloading', percent });
+    publishUpdateStatus({ status: 'downloading', percent });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     console.log('Update downloaded');
     sendUpdaterEvent('update-downloaded', info);
-    sendUpdaterEvent('update-status', { status: 'downloaded' });
+    publishUpdateStatus({ status: 'downloaded', version: info?.version });
   });
 
-  sendUpdaterEvent('update-status', { status: 'idle', message: 'Обновления: не проверялись' });
+  publishUpdateStatus({ status: 'idle', message: 'Обновления: не проверялись' });
+
+  // Автопроверка после загрузки интерфейса и далее по расписанию.
+  const startAutoChecks = () => scheduleAutoUpdateCheck(10 * 1000);
+  if (mainWindow?.webContents?.isLoading?.()) {
+    mainWindow.webContents.once('did-finish-load', startAutoChecks);
+  } else {
+    startAutoChecks();
+  }
 }
 
-ipcMain.handle('check-for-updates', async () => {
+function scheduleAutoUpdateCheck(delayMs = UPDATE_CHECK_INTERVAL_MS) {
+  if (!app.isPackaged) return;
+  if (autoUpdateTimer) clearTimeout(autoUpdateTimer);
+  autoUpdateTimer = setTimeout(async () => {
+    autoUpdateTimer = null;
+    let nextDelay = UPDATE_CHECK_INTERVAL_MS;
+    try {
+      const result = await checkForUpdatesSafely({ manual: false });
+      if (result?.retryAfterMs > 0) {
+        nextDelay = Math.min(UPDATE_CHECK_INTERVAL_MS, Math.max(result.retryAfterMs, UPDATE_RETRY_MIN_MS));
+      }
+    } catch (e) {
+      console.error('Automatic update check failed:', e);
+      nextDelay = UPDATE_RETRY_MIN_MS;
+    }
+    // Небольшой разброс, чтобы проверки не приходились на одну минуту у всех.
+    scheduleAutoUpdateCheck(nextDelay + Math.floor(Math.random() * 10 * 60 * 1000));
+  }, delayMs);
+}
+
+ipcMain.handle('check-for-updates', async (event, options) => {
   if (!app.isPackaged) {
     return { success: false, error: 'Auto updates work only in packaged builds' };
   }
 
-  return await checkForUpdatesSafely();
+  return await checkForUpdatesSafely({ manual: options?.manual !== false });
+});
+
+ipcMain.handle('get-update-status', () => lastUpdateStatus);
+
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return { success: false, error: 'Unsupported URL' };
+    }
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('quit-and-install', () => {
-  autoUpdater.quitAndInstall();
-  return { success: true };
+  if (!app.isPackaged) {
+    return { success: false, error: 'Auto updates work only in packaged builds' };
+  }
+  try {
+    // Возвращаем ответ renderer'у до выхода из приложения.
+    setImmediate(() => {
+      try {
+        autoUpdater.quitAndInstall();
+      } catch (e) {
+        console.error('quitAndInstall failed:', e);
+      }
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('quitAndInstall error:', e);
+    return { success: false, error: e.message };
+  }
 });
 
 // ================== App Lifecycle ==================
 app.whenReady().then(() => {
   loadHistory();
   migrateOldData();
+  buildApplicationMenu();
   createSplashWindow();
   createMainWindow();
   initAutoUpdater();
@@ -242,6 +584,16 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+// Не теряем последние записи истории при выходе: отложенная запись
+// сбрасывается синхронно, пока приложение ещё живо.
+app.on('before-quit', () => {
+  if (historyWriteTimer) {
+    clearTimeout(historyWriteTimer);
+    historyWriteTimer = null;
+  }
+  if (historyDirty) saveHistorySync();
+});
+
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createSplashWindow();
@@ -249,113 +601,79 @@ app.on('activate', () => {
   }
 });
 
-// ================== Request Body ==================
-function buildRequestBody(step, item, env) {
-  const bodyType = step.bodyType || 'raw';
-
-  switch (bodyType) {
-    case 'none':
-      return { data: undefined, headers: {} };
-    case 'form-data': {
-      const form = new FormData();
-      if (Array.isArray(step.formData)) {
-        step.formData.forEach(field => {
-          if (field.enabled === false || !field.key) return;
-          const key = replacePlaceholders(field.key, item, env);
-          if (field.type === 'file' && field.filePath) {
-            try { form.append(key, fs.createReadStream(field.filePath)); } catch (e) { console.error('Ошибка чтения файла:', field.filePath, e); }
-          } else {
-            form.append(key, replacePlaceholders(field.value || '', item, env));
-          }
-        });
-      }
-      return { data: form, headers: form.getHeaders() };
-    }
-    case 'urlencoded': {
-      const params = new URLSearchParams();
-      if (Array.isArray(step.urlencoded)) {
-        step.urlencoded.forEach(field => {
-          if (field.enabled === false || !field.key) return;
-          params.append(replacePlaceholders(field.key, item, env), replacePlaceholders(field.value || '', item, env));
-        });
-      }
-      return { data: params, headers: {} };
-    }
-    case 'raw': {
-      if (step.rawType === 'json') validateUnquotedJsonPlaceholders(step.body || '', item, env);
-      let body = replacePlaceholders(step.body || '', item, env, { toJson: true });
-      let data;
-      if (step.rawType === 'json') {
-        body = repairJsonText(body);
-        data = JSON.parse(body);
-      } else {
-        data = body;
-      }
-      return { data, headers: {} };
-    }
-    case 'binary': {
-      if (step.binaryPath && fs.existsSync(step.binaryPath)) return { data: fs.readFileSync(step.binaryPath), headers: {} };
-      return { data: undefined, headers: {} };
-    }
-    case 'graphql': {
-      const query = replacePlaceholders(step.graphql?.query || '', item, env);
-      let variables = {};
-      if (step.graphql?.variables && step.graphql.variables.trim()) {
-        try {
-          variables = JSON.parse(replacePlaceholders(step.graphql.variables, item, env, { toJson: true }));
-        } catch (e) {
-          console.error('GraphQL variables parse error:', e.message);
-        }
-      }
-      return { data: { query, variables }, headers: {} };
-    }
-    default:
-      return { data: undefined, headers: {} };
-  }
-}
 
 // ================== History (Batched) ==================
-let historyWritePending = false;
 let historyWriteTimer = null;
-const HISTORY_BATCH_SIZE = 50;
-const HISTORY_BATCH_MS = 5000;
+let historyWriteInFlight = null;
+let historyDirty = false;
+const HISTORY_MAX_ENTRIES = 500;
+const HISTORY_SAVE_DELAY_MS = 3000;
 
 function loadHistory() {
   try {
     if (fs.existsSync(historyPath)) {
       const raw = fs.readFileSync(historyPath, 'utf8');
-      history = JSON.parse(raw);
-      // Trim history to last 500 entries on load to manage file size
-      if (history.length > 500) {
-        history = history.slice(0, 500);
+      const parsed = JSON.parse(raw);
+      history = Array.isArray(parsed) ? parsed.filter((e) => e && typeof e === 'object') : [];
+      // Trim history to the last entries on load to manage file size
+      if (history.length > HISTORY_MAX_ENTRIES) {
+        history = history.slice(0, HISTORY_MAX_ENTRIES);
         saveHistorySync();
       }
     }
   } catch { history = []; }
 }
 
+// Синхронная запись нужна только там, где данные обязаны быть на диске
+// немедленно (выход из приложения, очистка истории).
 function saveHistorySync() {
-  try { fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8'); } catch (e) { console.error('Ошибка сохранения истории:', e); }
+  try {
+    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8');
+    historyDirty = false;
+  } catch (e) { console.error('Ошибка сохранения истории:', e); }
 }
 
+// Асинхронная запись, чтобы не блокировать главный процесс на время запуска
+// коллекции (файл истории легко достигает нескольких мегабайт).
+async function flushHistory() {
+  if (!historyDirty) return;
+  if (historyWriteInFlight) {
+    await historyWriteInFlight.catch(() => {});
+    if (!historyDirty) return;
+  }
+  historyDirty = false;
+  const payload = JSON.stringify(history, null, 2);
+  historyWriteInFlight = (async () => {
+    const tmpPath = `${historyPath}.${process.pid}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, payload, 'utf8');
+      await fs.promises.rename(tmpPath, historyPath);
+    } catch (e) {
+      historyDirty = true;
+      console.error('Ошибка сохранения истории:', e);
+      try { await fs.promises.rm(tmpPath, { force: true }); } catch { /* ignore */ }
+    } finally {
+      historyWriteInFlight = null;
+    }
+  })();
+  await historyWriteInFlight;
+}
+
+// Фиксированный дедлайн без перезапуска таймера: при интенсивном запуске
+// история всё равно уходит на диск раз в HISTORY_SAVE_DELAY_MS.
 function scheduleHistorySave() {
-  if (historyWriteTimer) clearTimeout(historyWriteTimer);
+  historyDirty = true;
+  if (historyWriteTimer) return;
   historyWriteTimer = setTimeout(() => {
-    saveHistorySync();
-    historyWritePending = false;
     historyWriteTimer = null;
-  }, HISTORY_BATCH_MS);
+    void flushHistory();
+  }, HISTORY_SAVE_DELAY_MS);
 }
 
 function addToHistory(entry) {
   history.unshift(entry);
-  if (history.length > 500) history.length = 500;
-
-  // Batch: save only every N entries or after timeout
-  if (!historyWritePending || history.length % HISTORY_BATCH_SIZE === 0) {
-    historyWritePending = true;
-    scheduleHistorySave();
-  }
+  if (history.length > HISTORY_MAX_ENTRIES) history.length = HISTORY_MAX_ENTRIES;
+  scheduleHistorySave();
 }
 
 function getHistoryCollections() {
@@ -385,9 +703,10 @@ function matchesHistoryFilters(entry, filters = {}) {
 }
 
 function getHistoryPage(query = {}) {
-  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
-  const requestedPageSize = Number.parseInt(query.pageSize, 10);
-  const pageSize = Math.max(0, Math.min(200, Number.isFinite(requestedPageSize) ? requestedPageSize : 50));
+  // Безопасные целые: parseInt('12abc') тихо вернул бы 12, а очень длинная
+  // строка страницы потеряла бы точность и сломала срез.
+  const page = clampInt(query.page, 1, Number.MAX_SAFE_INTEGER, 1);
+  const pageSize = clampInt(query.pageSize, 0, 200, 50);
   const filters = query.filters || {};
   const filtered = history.filter(entry => matchesHistoryFilters(entry, filters));
   const start = (page - 1) * pageSize;
@@ -404,21 +723,28 @@ function getHistoryPage(query = {}) {
 }
 
 // ================== Recent Collections ==================
+// Список ведётся только в памяти. Раньше каждая запись перечитывала с диска
+// многомегабайтный JSON и сразу писала его обратно — это и тормозило клики,
+// и могло затереть более свежие данные, пришедшие из renderer.
 function updateRecentCollection(collectionId, reason = 'viewed') {
   if (!collectionId) return;
 
-  const data = readData();
-  if (!data.recentCollections) data.recentCollections = [];
+  const data = dataCache || readData();
+  if (!data) return;
+  // Открытие может прийти с именем коллекции вместо id (старые сборки) —
+  // такие записи отбрасываем, чтобы не хранить мусор.
+  if (!Array.isArray(data.collections) || !data.collections.some((c) => c && c.id === collectionId)) return;
+
+  if (!Array.isArray(data.recentCollections)) data.recentCollections = [];
 
   const now = Date.now();
-  const existing = data.recentCollections.findIndex(r => r.collectionId === collectionId);
+  const existing = data.recentCollections.find(r => r && r.collectionId === collectionId);
 
-  if (existing >= 0) {
-    // Update existing entry
-    data.recentCollections[existing].timestamp = now;
-    data.recentCollections[existing].reason = reason;
+  if (existing) {
+    if (existing.reason === reason && now - (existing.timestamp || 0) < RECENT_COLLECTION_DEDUPE_MS) return;
+    existing.timestamp = now;
+    existing.reason = reason;
   } else {
-    // Add new entry
     data.recentCollections.push({
       collectionId,
       timestamp: now,
@@ -429,14 +755,7 @@ function updateRecentCollection(collectionId, reason = 'viewed') {
   // Keep only 20 most recent
   data.recentCollections.sort((a, b) => b.timestamp - a.timestamp);
   data.recentCollections = data.recentCollections.slice(0, 20);
-
-  writeData(data);
-}
-
-function cleanExpiredRecentCollections(data) {
-  if (!data.recentCollections) return;
-  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-  data.recentCollections = data.recentCollections.filter(r => r.timestamp > thirtyDaysAgo);
+  dataCache = data;
 }
 
 ipcMain.handle('update-recent-collection', async (event, collectionId, reason) => {
@@ -445,14 +764,23 @@ ipcMain.handle('update-recent-collection', async (event, collectionId, reason) =
 });
 
 ipcMain.handle('get-recent-collections', async () => {
-  const data = readData();
+  const data = dataCache || readData();
   return data.recentCollections || [];
 });
 
 // ================== Data (Async Write) ==================
+// Не копируем 20+ МБ файл на каждый чих: backup обновляется не чаще, чем раз в 5 минут.
+const BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
+// Одно и то же открытие коллекции не должно перезаписывать recentCollections чаще раза в минуту.
+const RECENT_COLLECTION_DEDUPE_MS = 60 * 1000;
+
+// Последнее известное состояние данных. Живёт в памяти, чтобы не парсить
+// многомегабайтный JSON заново на каждое открытие коллекции.
+let dataCache = null;
+
 function migrateOldData() {
   if (fs.existsSync(dataPath)) return;
-  const data = { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [] };
+  const data = emptyAppData();
   if (fs.existsSync(oldCollectionsPath)) {
     try {
       const old = JSON.parse(fs.readFileSync(oldCollectionsPath, 'utf8'));
@@ -466,58 +794,52 @@ function migrateOldData() {
 function readData() {
   try {
     const raw = fs.readFileSync(dataPath, 'utf8');
-    const d = JSON.parse(raw);
+    const d = normalizeAppData(JSON.parse(raw));
     if (raw && raw.length > 100) lastWrittenJson = raw;
-    if (!d.folders) d.folders = [];
-    if (!d.collections) d.collections = [];
-    if (!d.environments) d.environments = [];
-    if (!d.platforms) d.platforms = [];
-    if (!d.scriptPresets) d.scriptPresets = [];
-    if (!d.activePlatformId) d.activePlatformId = '';
-    if (!d.activeCollectionId) d.activeCollectionId = '';
-    if (!d.openTabs) d.openTabs = [];
-    if (!d.recentCollections) d.recentCollections = [];
-    cleanExpiredRecentCollections(d);
-
-    // Initialize scripts field for all steps (backward compatibility)
-    d.collections.forEach(c => {
-      if (!Array.isArray(c.steps)) c.steps = [];
-      c.steps.forEach(step => {
-        if (!step.scripts) {
-          step.scripts = {
-            prerequest: { enabled: false, code: '', timeout: 5000 },
-            postresponse: { enabled: false, code: '', timeout: 5000 }
-          };
-        }
-      });
-    });
-
+    dataCache = d;
     return d;
-  } catch { return { folders: [], collections: [], environments: [], platforms: [], scriptPresets: [], activePlatformId: '', activeCollectionId: '', openTabs: [], recentCollections: [] }; }
+  } catch {
+    // Не затираем кэш: файл может быть временно занят, данные в памяти новее.
+    return dataCache ? dataCache : emptyAppData();
+  }
+}
+
+async function shouldRefreshBackup() {
+  try {
+    const stat = await fs.promises.stat(dataPath + '.backup');
+    return Date.now() - stat.mtimeMs > BACKUP_MIN_INTERVAL_MS;
+  } catch {
+    return true;
+  }
 }
 
 async function writeData(data) {
-  const json = JSON.stringify(data, null, 2);
+  if (!data || typeof data !== 'object') return;
 
-  // ЗАЩИТА: Не сохраняем пустые данные, если раньше что-то было
-  const isEmpty = (!data.folders || data.folders.length === 0) &&
-    (!data.collections || data.collections.length === 0);
+  // В подготовке данных выкидываются служебные поля и тяжёлые результаты
+  // последнего запуска, а recentCollections берётся из памяти главного процесса.
+  const stored = prepareDataForDisk(data, {
+    recentCollections: dataCache && Array.isArray(dataCache.recentCollections) ? dataCache.recentCollections : undefined,
+  });
+  const json = JSON.stringify(stored, null, 2);
 
-  if (isEmpty && lastWrittenJson && lastWrittenJson.length > 100) {
-    console.warn('⚠️ Попытка сохранить пустые данные — игнорируем!');
-    return;
-  }
-
-  // Не пишем если данные не изменились
-  if (json === lastWrittenJson) return;
+  // Пустое рабочее пространство — это законное действие пользователя
+  // (удалил все коллекции). Не блокируем его, но обязательно сохраняем
+  // копию предыдущих данных перед такой записью.
+  const isEmptyWorkspace = stored.collections.length === 0 && stored.folders.length === 0;
 
   // Ждём завершения предыдущей записи
   if (writePromise) await writePromise;
 
   writePromise = (async () => {
     try {
-      // Backup перед записью
-      if (fs.existsSync(dataPath)) {
+      const previousJson = lastWrittenJson;
+      if (json === previousJson) {
+        dataCache = stored;
+        return;
+      }
+
+      if (fs.existsSync(dataPath) && (isEmptyWorkspace || (await shouldRefreshBackup()))) {
         const backupPath = dataPath + '.backup';
         try {
           await retryBusy(() => fs.promises.copyFile(dataPath, backupPath));
@@ -525,6 +847,7 @@ async function writeData(data) {
           console.warn('Не удалось обновить backup перед сохранением:', backupError.message);
         }
       }
+
       // Асинхронная запись
       const tmpPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
       await retryBusy(() => fs.promises.writeFile(tmpPath, json, 'utf8'));
@@ -541,6 +864,7 @@ async function writeData(data) {
         }
       });
       lastWrittenJson = json;
+      dataCache = stored;
     } catch (e) {
       console.error('Ошибка записи данных:', e);
       throw e;
@@ -598,7 +922,7 @@ ipcMain.handle('export-app-backup', async (event, settings = {}) => {
       app: 'AB Runner',
       version: app.getVersion(),
       exportedAt: new Date().toISOString(),
-      data: readData(),
+      data: dataCache || readData(),
       history,
       settings: {
         theme: settings.theme || 'dark',
@@ -633,6 +957,9 @@ ipcMain.handle('import-app-backup', async () => {
     const nextHistory = Array.isArray(parsed.history) ? parsed.history : [];
     const nextSettings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
 
+    // Импорт должен записать именно данные из backup, поэтому кэш сбрасываем:
+    // иначе recentCollections из текущей сессии подменили бы импортированные.
+    dataCache = null;
     await writeData(nextData);
     history = nextHistory;
     saveHistorySync();
@@ -672,82 +999,6 @@ function getAvgTime(requestTimes) {
   return requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0;
 }
 
-function serializeRequestBody(data) {
-  return typeof data === 'string' ? data : (data == null ? null : JSON.stringify(data));
-}
-
-function validateUnquotedJsonPlaceholders(template, item, env) {
-  const placeholderPath = '[A-Za-z0-9_$-]+(?:\\.[A-Za-z0-9_$-]+)*';
-  const placeholderRegex = new RegExp(`\\{\\{\\s*(${placeholderPath})\\s*\\}\\}|(?<!\\{)\\{(${placeholderPath})\\}(?!\\})`, 'g');
-  let match;
-
-  while ((match = placeholderRegex.exec(template)) !== null) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (template[start - 1] === '"' && template[end] === '"') continue;
-
-    const name = (match[1] || match[2] || '').trim();
-    const resolved = replacePlaceholders(match[0], item, env, { toJson: true });
-
-    if (resolved === match[0]) {
-      throw new Error(`Переменная "${name}" не найдена, но используется как JSON-значение без кавычек`);
-    }
-
-    if (!String(resolved).trim()) {
-      throw new Error(`Переменная "${name}" пустая. Если это массив, укажите в ENV значение вроде [] или ["A","B"]`);
-    }
-
-    try {
-      JSON.parse(resolved);
-    } catch {
-      throw new Error(`Переменная "${name}" должна быть валидным JSON, потому что используется без кавычек. Например: [], ["A","B"], {"id":1}`);
-    }
-  }
-}
-
-function buildStepRequestState(step, item, env) {
-  const url = replacePlaceholders(step.url, item, env);
-  const { data, headers: bodyHeaders } = buildRequestBody(step, item, env);
-  return {
-    method: step.method || 'GET',
-    url,
-    headers: { ...buildHeaders(step, url, step.method, item, env), ...bodyHeaders },
-    body: data,
-  };
-}
-
-function buildStepScriptRequestState(step, item, env) {
-  const url = replacePlaceholders(step.url, item, env);
-  const initialBody = step.bodyType === 'raw' ? (step.body || '') : undefined;
-  return {
-    method: step.method || 'GET',
-    url,
-    headers: buildHeaders(step, url, step.method, item, env),
-    body: initialBody,
-    __initialBody: initialBody,
-  };
-}
-
-function finalizeStepRequestState(step, item, env, state) {
-  const finalUrl = replacePlaceholders(state.url, item, env);
-  const bodyWasChangedByScript = state.body !== state.__initialBody;
-  const { data, headers: bodyHeaders } = bodyWasChangedByScript
-    ? { data: state.body, headers: {} }
-    : buildRequestBody(step, item, env);
-  const currentHeaders = { ...(state.headers || {}) };
-
-  delete state.__initialBody;
-  state.url = finalUrl;
-  state.headers = { ...buildHeaders(step, finalUrl, state.method, item, env), ...bodyHeaders, ...currentHeaders };
-  state.body = data;
-}
-
-function applyRequestStatePlaceholders(state, item, env) {
-  state.url = replacePlaceholders(state.url, item, env);
-  Object.keys(state.headers || {}).forEach((key) => {
-    state.headers[key] = replacePlaceholders(state.headers[key], item, env);
-  });
-}
 
 async function sendScriptRequest(options, item, env, signal) {
   const requestOptions = options || {};
@@ -807,15 +1058,20 @@ function getScriptCode(step, type) {
   return code == null || code === 'undefined' ? '' : String(code);
 }
 
-ipcMain.handle('run-collection', async (event, { steps, items, delay, collectionName, environment }) => {
+ipcMain.handle('run-collection', async (event, payload) => {
+  const { steps, items, delay, collectionName, environment, collectionId } = payload || {};
   if (!Array.isArray(items)) return { success: false, error: 'Данные должны быть массивом' };
+  if (!Array.isArray(steps) || steps.length === 0) return { success: false, error: 'В коллекции нет шагов' };
+  if (typeof collectionName !== 'string') return { success: false, error: 'Не указано имя коллекции' };
 
   const abortController = new AbortController();
   currentRun = { controller: abortController, cancelled: false };
 
   const env = environment || {};
+  const delayMs = clampDelay(delay);
   let counter = 0;
   let wasCancelled = false;
+  let abortReason = null;
   const totalRequests = items.length * steps.length;
   const startTime = Date.now();
   const requestTimes = [];
@@ -858,10 +1114,25 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                 request: requestState,
                 callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal),
               },
-              step.scripts.prerequest.timeout || 5000
+              clampScriptTimeout(step.scripts?.prerequest?.timeout)
             );
 
-            if (!scriptResult.success) {
+            const scriptOutcome = classifyScriptResult(scriptResult);
+            // pm.abort() возвращает success:false + abortCollection:true, поэтому
+            // проверять его нужно ДО общей ошибки скрипта, иначе запуск продолжался.
+            if (scriptOutcome === 'abort') {
+              abortReason = scriptResult.error || 'Aborted by script';
+              counter++;
+              const requestDuration = Date.now() - requestStartTime;
+              requestTimes.push(requestDuration);
+              const abortError = `Collection aborted: ${abortReason}`;
+              addToHistory({ timestamp: new Date().toISOString(), collection: collectionName, type: 'collection', item: JSON.stringify(item), stepName, url: currentUrl, method: requestMethod, status: 0, success: false, error: abortError, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
+              const avgTime = getAvgTime(requestTimes);
+              sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status: 0, error: abortError, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: 0, avgRequestTime: avgTime, response: null });
+              break;
+            }
+
+            if (scriptOutcome === 'error') {
               counter++;
               const requestDuration = Date.now() - requestStartTime;
               requestTimes.push(requestDuration);
@@ -871,7 +1142,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               continue;
             }
 
-            if (scriptResult.skipRequest) {
+            if (scriptOutcome === 'skip') {
               counter++;
               const requestDuration = Date.now() - requestStartTime;
               requestTimes.push(requestDuration);
@@ -882,10 +1153,6 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
               const avgTime = getAvgTime(requestTimes);
               sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: true, status: 0, requestBody, requestHeaders, environment: stepEnv, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: { status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl } });
               continue;
-            }
-
-            if (scriptResult.abortCollection) {
-              throw new Error(`Collection aborted: ${scriptResult.error}`);
             }
 
             // Update env with any changes made by script
@@ -927,7 +1194,7 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
                   request: requestState,
                   callbacks: createScriptCallbacks(steps, item, stepEnv, abortController.signal, requestState),
                 },
-                step.scripts.postresponse.timeout || 5000
+                clampScriptTimeout(step.scripts?.postresponse?.timeout)
               );
 
               if (!scriptResult.success) {
@@ -966,23 +1233,33 @@ ipcMain.handle('run-collection', async (event, { steps, items, delay, collection
           sendToRenderer('progress', { itemIndex: i, stepIndex: j, item: JSON.stringify(item), stepName, success: false, status, error: e.message, requestBody, requestHeaders, environment: stepEnv || env, requestNumber, totalRequests, requestDuration, elapsedMs: Date.now() - startTime, etaMs: (totalRequests - counter) * avgTime, avgRequestTime: avgTime, response: e.response ? { status: e.response.status, statusText: e.response.statusText, headers: e.response.headers, data: e.response.data, url: currentUrl } : null });
         }
 
-        if (delay > 0) {
-          await new Promise((resolve, reject) => {
-            const timer = setTimeout(resolve, delay);
-            abortController.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('cancelled')); });
-          }).catch(() => { });
+        if (delayMs > 0) {
+          await waitForDelay(delayMs, abortController.signal);
+          if (abortController.signal.aborted) break;
         }
       }
+      if (abortReason) break;
     }
   } finally {
     wasCancelled = currentRun?.cancelled || false;
     currentRun = null;
+    // Сохраняем историю сразу после запуска, не дожидаясь таймера.
+    await flushHistory();
   }
 
   // Track collection usage
-  updateRecentCollection(collectionName, 'executed');
+  updateRecentCollection(collectionId, 'executed');
 
-  return { success: !wasCancelled, totalExecuted: counter, totalTime: Date.now() - startTime, avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0, cancelled: wasCancelled, environment: env };
+  return {
+    success: !wasCancelled && !abortReason,
+    totalExecuted: counter,
+    totalTime: Date.now() - startTime,
+    avgTime: requestTimes.length > 0 ? Math.round(requestTimes.reduce((a, b) => a + b, 0) / requestTimes.length) : 0,
+    cancelled: wasCancelled,
+    aborted: Boolean(abortReason),
+    error: abortReason ? `Collection aborted: ${abortReason}` : undefined,
+    environment: env,
+  };
 });
 
 // ================== Stop Collection ==================
@@ -1000,7 +1277,7 @@ ipcMain.handle('stop-collection', async () => {
 
 // ================== Clear History Filtered ==================
 ipcMain.handle('clear-history-filtered', async (event, filters) => {
-  const { timeFilter, typeFilter, methodFilter, statusFilter } = filters;
+  const { timeFilter = 'all', typeFilter = 'all', methodFilter = 'all', statusFilter = 'all' } = filters || {};
   const now = Date.now();
   const beforeCount = history.length;
 
@@ -1023,7 +1300,7 @@ ipcMain.handle('clear-history-filtered', async (event, filters) => {
 });
 
 // ================== Single Request ==================
-ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, environment, collectionSteps }) => {
+ipcMain.handle('send-single-request', async (event, { step, testData, collectionName, collectionId, environment, collectionSteps }) => {
   const env = environment || {};
   try {
     const item = testData ? JSON.parse(testData) : {};
@@ -1045,14 +1322,14 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
           request: requestState,
           callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined),
         },
-        step.scripts.prerequest.timeout || 5000
+        clampScriptTimeout(step.scripts?.prerequest?.timeout)
       );
 
       if (!scriptResult.success) {
         if (scriptResult.abortCollection) throw new Error(`Aborted: ${scriptResult.error}`);
         const errorResult = { success: false, status: 0, statusText: `Pre-request script error: ${scriptResult.error}`, headers: {}, data: null, url: currentUrl, requestBody, requestHeaders, environment: env };
         addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: false, error: errorResult.statusText, responseData: null, responseHeaders: {}, requestBody, requestHeaders });
-        if (collectionName) updateRecentCollection(collectionName, 'executed');
+        updateRecentCollection(collectionId, 'executed');
         return errorResult;
       }
 
@@ -1060,7 +1337,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
         requestBody = serializeRequestBody(requestState.body);
         requestHeaders = requestState.headers;
         addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: 0, success: true, responseData: { skipped: true }, responseHeaders: {}, requestBody, requestHeaders: requestState.headers });
-        if (collectionName) updateRecentCollection(collectionName, 'executed');
+        updateRecentCollection(collectionId, 'executed');
         return { success: true, status: 0, statusText: 'Skipped', headers: {}, data: { skipped: true }, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
       }
 
@@ -1087,7 +1364,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
             response: { status: response.status, statusText: response.statusText, headers: response.headers, data: response.data },
             callbacks: createScriptCallbacks(collectionSteps || [], item, env, undefined, requestState),
           },
-          step.scripts.postresponse.timeout || 5000
+          clampScriptTimeout(step.scripts?.postresponse?.timeout)
         );
 
         if (!scriptResult.success) console.error('Post-response script error:', scriptResult.error);
@@ -1110,7 +1387,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
     const requestSuccess = response.status >= 200 && response.status < 400;
     addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: currentUrl, method: requestState.method, status: response.status, success: requestSuccess, error: requestSuccess ? null : response.statusText, responseData: response.data, responseHeaders: response.headers, requestBody, requestHeaders: requestState.headers });
 
-    if (collectionName) updateRecentCollection(collectionName, 'executed');
+    updateRecentCollection(collectionId, 'executed');
 
     return { success: requestSuccess, status: response.status, statusText: response.statusText, headers: response.headers, data: response.data, url: currentUrl, requestBody, requestHeaders: requestState.headers, environment: env };
   } catch (e) {
@@ -1118,7 +1395,7 @@ ipcMain.handle('send-single-request', async (event, { step, testData, collection
 
     addToHistory({ timestamp: new Date().toISOString(), collection: collectionName || '', type: 'single', item: testData || '{}', stepName: step.name || 'Single request', url: err.url, method: step.method, status: err.status, success: false, error: e.message, responseData: err.data, responseHeaders: err.headers, requestBody: err.requestBody, requestHeaders: err.requestHeaders });
 
-    if (collectionName) updateRecentCollection(collectionName, 'executed');
+    updateRecentCollection(collectionId, 'executed');
 
     return err;
   }
@@ -1148,7 +1425,7 @@ ipcMain.handle('run-script-lab', async (event, { code, data, environment, timeou
         log: (...args) => logs.push(args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ')),
       },
     },
-    Math.max(1000, Number(timeout) || 10000),
+    clampScriptTimeout(timeout, 10000),
   );
 
   return {

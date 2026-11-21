@@ -169,9 +169,22 @@ function validateScriptSyntax(code) {
   }
 }
 
+// Interprets a script result. pm.abort() resolves with success:false AND
+// abortCollection:true, so abort must be checked before the generic error —
+// otherwise an aborting script is reported as an ordinary script error and the
+// run keeps going.
+function classifyScriptResult(result) {
+  if (!result) return 'ok';
+  if (result.abortCollection) return 'abort';
+  if (!result.success) return 'error';
+  if (result.skipRequest) return 'skip';
+  return 'ok';
+}
+
 module.exports = {
   executeScript,
   validateScriptSyntax,
+  classifyScriptResult,
   ScriptExecutionError,
   clearStepVariables,
 };

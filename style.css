@@ -340,6 +340,101 @@ body {
   color: var(--danger);
 }
 
+/* Перетаскивание вкладок открытых запросов */
+.tab-item.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.tab-item.drag-before::before,
+.tab-item.drag-after::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 999px;
+  box-shadow: 0 0 6px rgba(108, 99, 255, 0.75);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.tab-item.drag-before::before {
+  left: -1px;
+}
+
+.tab-item.drag-after::after {
+  right: -1px;
+}
+
+/* Список горячих клавиш */
+.hotkeys-modal {
+  width: 620px;
+  max-width: 92vw;
+}
+
+.hotkeys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 8px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.hotkeys-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.hotkey-row:last-child {
+  border-bottom: none;
+}
+
+.hotkey-label {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.hotkey-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.hotkey-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1;
+}
+
 #emptyState,
 #collectionEditor {
   flex: 1;
@@ -609,6 +704,7 @@ body {
 }
 
 .update-status[data-status='available'],
+.update-status[data-status='available-manual'],
 .update-status[data-status='downloading'] {
   color: var(--warning);
 }

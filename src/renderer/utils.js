@@ -56,3 +56,31 @@ export function cachedJsonParse(str) {
 export function clearJsonCache() {
   jsonCache.clear();
 }
+
+// ================== Безопасные числовые преобразования ==================
+// Renderer не может импортировать CommonJS-модули, поэтому те же помощники
+// продублированы здесь (эталон и тесты — src/shared/numbers.js).
+// parseInt/parseFloat теряют точность на длинных числах, а setTimeout
+// переполняется выше 2^31-1 мс, поэтому значения ограничиваем диапазоном.
+
+export const MAX_DELAY_MS = 10 * 60 * 1000;
+export const MIN_SCRIPT_TIMEOUT_MS = 1000;
+export const MAX_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_SCRIPT_TIMEOUT_MS = 5000;
+
+export function clampInt(value, min, max, fallback) {
+  // Пустое поле в UI означает "не задано" — берём fallback, а не 0.
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+export function clampDelay(value) {
+  return clampInt(value, 0, MAX_DELAY_MS, 0);
+}
+
+export function clampScriptTimeout(value, fallback = DEFAULT_SCRIPT_TIMEOUT_MS) {
+  return clampInt(value, MIN_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_MS, fallback);
+}

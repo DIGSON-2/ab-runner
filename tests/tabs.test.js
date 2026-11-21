@@ -1,4 +1,6 @@
-import { touchTab, closeTab, closeUnpinned, setPinned, pruneTabs } from '../src/renderer/tabs.js';
+import { touchTab, closeTab, closeUnpinned, setPinned, pruneTabs, moveTab } from '../src/renderer/tabs.js';
+
+const makeTabs = (...ids) => ids.map((id) => ({ id, pinned: false, lastOpenedAt: 1 }));
 
 describe('tabs module', () => {
   test('touchTab adds a new tab', () => {
@@ -67,5 +69,46 @@ describe('tabs module', () => {
     ];
     const alive = new Set(['c1']);
     expect(pruneTabs(tabs, (id) => alive.has(id)).map((t) => t.id)).toEqual(['c1']);
+  });
+
+  test('moveTab moves a tab forward (drag to the right)', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    // Drag "a" and drop it after "b".
+    expect(moveTab(tabs, 'a', 'b', false).map((t) => t.id)).toEqual(['b', 'a', 'c']);
+  });
+
+  test('moveTab moves a tab backward (drag to the left)', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    // Drag "c" and drop it before "a".
+    expect(moveTab(tabs, 'c', 'a', true).map((t) => t.id)).toEqual(['c', 'a', 'b']);
+  });
+
+  test('moveTab inserts before/after the target', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    expect(moveTab(tabs, 'c', 'b', true).map((t) => t.id)).toEqual(['a', 'c', 'b']);
+    expect(moveTab(tabs, 'c', 'b', false).map((t) => t.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  test('moveTab moves a tab to the end when target is empty', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    expect(moveTab(tabs, 'a', null).map((t) => t.id)).toEqual(['b', 'c', 'a']);
+    expect(moveTab(tabs, 'a', '').map((t) => t.id)).toEqual(['b', 'c', 'a']);
+  });
+
+  test('moveTab returns the same array for no-op moves', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    expect(moveTab(tabs, 'b', 'b')).toBe(tabs);
+    expect(moveTab(tabs, 'missing', 'a')).toBe(tabs);
+    expect(moveTab(tabs, 'a', 'missing')).toBe(tabs);
+    expect(moveTab(tabs, '', 'a')).toBe(tabs);
+    // Already at the end and dropped at the end.
+    expect(moveTab(tabs, 'c', null)).toBe(tabs);
+  });
+
+  test('moveTab does not mutate the input array', () => {
+    const tabs = makeTabs('a', 'b', 'c');
+    const next = moveTab(tabs, 'a', 'c', false);
+    expect(tabs.map((t) => t.id)).toEqual(['a', 'b', 'c']);
+    expect(next.map((t) => t.id)).toEqual(['b', 'c', 'a']);
   });
 });
